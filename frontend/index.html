@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="UTF-8"/>
+  <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+  <title>WS</title>
+</head>
+<body>
+  <div id="app" class="app">
+    <!-- top bar -->
+    <header class="bar">
+      <div class="brand" title="WS">WS</div>
+      <select id="profile" class="select" title="Profile"></select>
+      <input id="url" class="input url" type="text" spellcheck="false" placeholder="ws://host:port/path"/>
+      <input id="protocol" class="input proto" type="text" spellcheck="false" placeholder="subprotocol"/>
+      <label class="check"><input id="reconnect" type="checkbox" checked/> 重连</label>
+      <button id="btnToggle" class="btn primary" type="button">连接</button>
+      <div id="state" class="state idle">idle</div>
+      <button id="btnHistory" class="btn ghost bar-btn" type="button" title="历史会话">历史</button>
+      <button id="btnTheme" class="btn ghost bar-btn" type="button" title="切换主题">深色</button>
+    </header>
+
+    <!-- history banner -->
+    <div id="histBanner" class="hist-banner hidden">
+      <span id="histLabel">历史模式</span>
+      <button id="btnLive" class="btn ghost" type="button">返回实时</button>
+    </div>
+
+    <!-- main -->
+    <main class="main">
+      <section class="list-pane">
+        <div class="pane-head">
+          <span id="listTitle">消息</span>
+          <div class="pane-actions">
+            <input id="msgFilter" class="input search-inline hidden" type="search" spellcheck="false" placeholder="过滤消息…"/>
+            <button id="btnClear" class="btn ghost" type="button">清空</button>
+          </div>
+        </div>
+        <div id="list" class="list"></div>
+      </section>
+      <section class="detail-pane">
+        <div class="pane-head">
+          <span>详情</span>
+        </div>
+        <div id="detail" class="detail empty">选择一条消息</div>
+      </section>
+    </main>
+
+    <!-- composer -->
+    <footer class="composer">
+      <textarea id="payload" class="payload" spellcheck="false" placeholder='{"cmd":"ping"}  ·  Ctrl+Enter 发送'></textarea>
+      <div class="composer-actions">
+        <button id="btnFormat" class="btn ghost" type="button">格式化</button>
+        <button id="btnResend" class="btn ghost" type="button">重发</button>
+        <button id="btnSend" class="btn primary" type="button">发送</button>
+      </div>
+      <div id="footer" class="footer-meta"></div>
+    </footer>
+  </div>
+
+  <!-- history modal -->
+  <div id="histModal" class="modal hidden" aria-hidden="true">
+    <div class="modal-card">
+      <div class="modal-head">
+        <span>历史会话</span>
+        <div class="pane-actions">
+          <button id="btnOpenLogDir" class="btn ghost" type="button">打开目录</button>
+          <button id="btnPickSession" class="btn ghost" type="button">打开文件…</button>
+          <button id="btnHistRefresh" class="btn ghost" type="button">刷新</button>
+          <button id="btnHistClose" class="btn ghost" type="button">关闭</button>
+        </div>
+      </div>
+      <div class="hist-search-bar">
+        <input id="histSearch" class="input hist-search" type="search" spellcheck="false"
+               placeholder="关键字搜索：文件名 / URL / 消息内容…"/>
+      </div>
+      <div id="histList" class="hist-list"></div>
+      <div id="histEmpty" class="hist-empty hidden">暂无按天日志（ws-YYYY-MM-DD.jsonl），连接后会自动生成</div>
+    </div>
+  </div>
+
+  <script src="./src/main.js" type="module"></script>
+</body>
+</html>

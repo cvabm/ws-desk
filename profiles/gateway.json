@@ -1,0 +1,8 @@
+{
+  "name": "gateway",
+  "url": "ws://192.0.2.13:8188/gw",
+  "protocol": "venus-protocol",
+  "headers": {},
+  "reconnect": true,
+  "pingSec": 20
+}
