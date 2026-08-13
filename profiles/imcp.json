@@ -1,8 +1,0 @@
-{
-  "name": "imcp",
-  "url": "ws://192.0.2.11:10020/imcp",
-  "protocol": "",
-  "headers": {},
-  "reconnect": true,
-  "pingSec": 20
-}

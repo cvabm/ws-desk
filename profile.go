@@ -2,57 +2,64 @@ package main
 
 import (
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 )
 
-func defaultProfiles() []Profile {
-	return []Profile{
-		{
-			Name:      "imcp",
-			URL:       "ws://192.0.2.11:10020/imcp",
-			Reconnect: true,
-			PingSec:   20,
-			Headers:   map[string]string{},
-		},
-		{
-			Name:      "gateway",
-			URL:       "ws://192.0.2.13:8188/gw",
-			Protocol:  "venus-protocol",
-			Reconnect: true,
-			PingSec:   20,
-			Headers:   map[string]string{},
-		},
-	}
+func (a *App) ensureServers() error {
+	return os.MkdirAll(a.serversDir(), 0o755)
 }
 
-func (a *App) profilesDir() string {
-	return filepath.Join(a.baseDir, "profiles")
-}
-
-func (a *App) ensureProfiles() error {
-	dir := a.profilesDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+// urlHostname is the request host (IP or domain), without port or scheme.
+func urlHostname(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
 	}
-	entries, err := os.ReadDir(dir)
+	if !hasURLScheme(raw) {
+		raw = "ws://" + strings.TrimPrefix(raw, "//")
+	}
+	u, err := url.Parse(raw)
 	if err != nil {
-		return err
+		return ""
 	}
-	if len(entries) > 0 {
-		return nil
+	return strings.TrimSpace(u.Hostname())
+}
+
+// profileNameFromURL is "scheme://host" (no port). Missing scheme defaults to ws.
+func profileNameFromURL(raw string) string {
+	host := urlHostname(raw)
+	if host == "" {
+		return ""
 	}
-	for _, p := range defaultProfiles() {
-		if err := a.saveProfileFile(p); err != nil {
-			return err
+	scheme := "ws"
+	if hasURLScheme(raw) {
+		if s := urlSchemeOf(raw); s != "" {
+			scheme = s
 		}
 	}
-	return nil
+	return scheme + "://" + host
+}
+
+func profileFileName(name string) string {
+	name = strings.TrimSpace(name)
+	if i := strings.Index(name, "://"); i > 0 {
+		scheme := strings.ToLower(strings.TrimSpace(name[:i]))
+		host := strings.TrimSpace(name[i+3:])
+		if scheme != "" && host != "" {
+			return sanitizeName(scheme) + "-" + sanitizeName(host) + ".json"
+		}
+	}
+	return sanitizeName(name) + ".json"
 }
 
 func (a *App) saveProfileFile(p Profile) error {
+	if err := a.ensureServers(); err != nil {
+		return err
+	}
 	if p.Headers == nil {
 		p.Headers = map[string]string{}
 	}
@@ -60,24 +67,24 @@ func (a *App) saveProfileFile(p Profile) error {
 	if err != nil {
 		return err
 	}
-	name := sanitizeName(p.Name) + ".json"
-	return os.WriteFile(filepath.Join(a.profilesDir(), name), data, 0o644)
+	return os.WriteFile(filepath.Join(a.serversDir(), profileFileName(p.Name)), data, 0o644)
 }
 
 func (a *App) loadProfiles() ([]Profile, error) {
-	if err := a.ensureProfiles(); err != nil {
-		return defaultProfiles(), nil
+	if err := a.ensureServers(); err != nil {
+		return nil, err
 	}
-	entries, err := os.ReadDir(a.profilesDir())
+	_ = a.migrateLegacyNamedProfiles()
+	entries, err := os.ReadDir(a.serversDir())
 	if err != nil {
-		return defaultProfiles(), nil
+		return nil, err
 	}
 	var list []Profile
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".json") {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(a.profilesDir(), e.Name()))
+		raw, err := os.ReadFile(filepath.Join(a.serversDir(), e.Name()))
 		if err != nil {
 			continue
 		}
@@ -85,7 +92,9 @@ func (a *App) loadProfiles() ([]Profile, error) {
 		if err := json.Unmarshal(raw, &p); err != nil {
 			continue
 		}
-		if p.Name == "" {
+		if name := profileNameFromURL(p.URL); name != "" {
+			p.Name = name
+		} else if p.Name == "" {
 			p.Name = strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
 		}
 		if p.Headers == nil {
@@ -93,11 +102,47 @@ func (a *App) loadProfiles() ([]Profile, error) {
 		}
 		list = append(list, p)
 	}
-	if len(list) == 0 {
-		return defaultProfiles(), nil
-	}
 	sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
 	return list, nil
+}
+
+// migrateLegacyNamedProfiles rewrites old named or host-only presets to scheme://host files.
+func (a *App) migrateLegacyNamedProfiles() error {
+	dir := a.serversDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var p Profile
+		if err := json.Unmarshal(raw, &p); err != nil {
+			continue
+		}
+		name := profileNameFromURL(p.URL)
+		if name == "" {
+			continue
+		}
+		want := profileFileName(name)
+		if strings.EqualFold(e.Name(), want) && p.Name == name {
+			continue
+		}
+		p.Name = name
+		if err := a.saveProfileFile(p); err != nil {
+			continue
+		}
+		if !strings.EqualFold(e.Name(), want) {
+			_ = os.Remove(path)
+		}
+	}
+	return nil
 }
 
 func sanitizeName(s string) string {

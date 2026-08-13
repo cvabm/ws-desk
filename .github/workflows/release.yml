@@ -44,19 +44,19 @@ jobs:
           $outDir = "release-out"
           New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
-          Copy-Item "build\bin\ws-desk.exe" "$outDir\ws-desk.exe"
-          if (Test-Path "profiles") {
-            Copy-Item -Recurse "profiles" "$outDir\profiles"
+          Copy-Item "build\bin\ApiTester.exe" "$outDir\ApiTester.exe"
+          if (Test-Path "servers") {
+            Copy-Item -Recurse "servers" "$outDir\servers"
           }
 
-          $zipName = "ws-desk-windows-amd64-$version.zip"
+          $zipName = "ApiTester-windows-amd64-$version.zip"
           if (Test-Path $zipName) { Remove-Item $zipName -Force }
           Compress-Archive -Path "$outDir\*" -DestinationPath $zipName
 
           # Keep a versioned exe name for direct download
-          Copy-Item "build\bin\ws-desk.exe" "ws-desk-windows-amd64-$version.exe"
+          Copy-Item "build\bin\ApiTester.exe" "ApiTester-windows-amd64-$version.exe"
 
-          Get-ChildItem $zipName, "ws-desk-windows-amd64-$version.exe" | Format-Table Name, Length
+          Get-ChildItem $zipName, "ApiTester-windows-amd64-$version.exe" | Format-Table Name, Length
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -67,8 +67,8 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
           files: |
-            ws-desk-windows-amd64-*.zip
-            ws-desk-windows-amd64-*.exe
+            ApiTester-windows-amd64-*.zip
+            ApiTester-windows-amd64-*.exe
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

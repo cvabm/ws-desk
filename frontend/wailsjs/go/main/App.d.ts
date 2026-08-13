@@ -26,6 +26,12 @@ export function OpenLogDir():Promise<void>;
 
 export function PickAndLoadSession():Promise<main.SessionDetail>;
 
+export function RecordHTTP(arg1:main.HTTPExchange):Promise<main.HTTPExchange>;
+
+export function RecordWS(arg1:main.ConnectOptions,arg2:string,arg3:string):Promise<main.WSRecord>;
+
+export function RequestHTTP(arg1:main.ConnectOptions,arg2:string):Promise<main.HTTPExchange>;
+
 export function SaveProfile(arg1:main.Profile):Promise<void>;
 
 export function SearchSessions(arg1:string):Promise<Array<main.SessionInfo>>;

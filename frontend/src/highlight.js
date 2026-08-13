@@ -192,6 +192,74 @@ function renderTree(value, key, depth, trailingComma) {
   );
 }
 
+function statusClass(code) {
+  if (code >= 200 && code < 300) return 'ok';
+  if (code >= 400) return 'err';
+  if (code >= 300) return 'warn';
+  return '';
+}
+
+function headerTable(headers) {
+  const entries = Object.entries(headers || {});
+  if (!entries.length) return `<div class="resp-empty">无</div>`;
+  return `<div class="hdr-table">${entries
+    .map(
+      ([k, v]) =>
+        `<div class="hdr-row"><span class="hdr-k">${escapeHtml(k)}</span><span class="hdr-v">${escapeHtml(v)}</span></div>`,
+    )
+    .join('')}</div>`;
+}
+
+function bodyBlock(raw) {
+  const parsed = tryParseJson(raw);
+  if (!parsed.ok) {
+    return `<div class="jt-plain">${raw ? highlightJson(raw) : '<span class="resp-empty">(empty)</span>'}</div>`;
+  }
+  return `<div class="jt-root">${renderTree(parsed.value, null, 0, false)}</div>`;
+}
+
+/** Render a Postman-like HTTP request/response snapshot. */
+export function renderHTTPExchange(ex) {
+  if (!ex) return '';
+  if (ex.error && !ex.statusCode) {
+    return `<div class="resp-error">${escapeHtml(ex.error)}</div>`;
+  }
+  const code = ex.statusCode || 0;
+  const size = ex.bytes || 0;
+  const sizeLabel = size < 1024 ? `${size} B` : `${(size / 1024).toFixed(1)} KB`;
+  return (
+    `<div class="resp-head">` +
+      `<span class="resp-code ${statusClass(code)}">${escapeHtml(ex.status || String(code))}</span>` +
+      (ex.manual ? `<span class="resp-badge">手动</span>` : `<span class="resp-stat">${ex.timeMs ?? 0} ms</span>`) +
+      `<span class="resp-stat">${escapeHtml(sizeLabel)}</span>` +
+      `<span class="resp-stat">${escapeHtml(ex.method || '')} ${escapeHtml(ex.url || '')}</span>` +
+    `</div>` +
+    (ex.error ? `<div class="resp-error">${escapeHtml(ex.error)}</div>` : '') +
+    `<div class="resp-sec">请求头</div>${headerTable(ex.reqHeaders)}` +
+    `<div class="resp-sec">请求体</div>${bodyBlock(ex.reqBody)}` +
+    `<div class="resp-sec">响应头</div>${headerTable(ex.resHeaders)}` +
+    `<div class="resp-sec">响应体</div>${bodyBlock(ex.resBody)}`
+  );
+}
+
+/** Render a manually saved WebSocket send/receive pair. */
+export function renderWSRecord(rec) {
+  if (!rec) return '';
+  const size = (rec.out || '').length + (rec.in || '').length;
+  const sizeLabel = size < 1024 ? `${size} B` : `${(size / 1024).toFixed(1)} KB`;
+  return (
+    `<div class="resp-head">` +
+      `<span class="resp-code">WS</span>` +
+      (rec.manual ? `<span class="resp-badge">手动</span>` : '') +
+      `<span class="resp-stat">${escapeHtml(sizeLabel)}</span>` +
+      `<span class="resp-stat">${escapeHtml(rec.url || '')}</span>` +
+      (rec.protocol ? `<span class="resp-stat">${escapeHtml(rec.protocol)}</span>` : '') +
+    `</div>` +
+    `<div class="resp-sec">发送</div>${bodyBlock(rec.out)}` +
+    `<div class="resp-sec">返回</div>${bodyBlock(rec.in)}`
+  );
+}
+
 /** Render detail header + collapsible JSON tree (or flat highlighted text). */
 export function renderDetailHtml(dir, time, body) {
   const meta = `<div class="detail-meta">[${escapeHtml(dir)}] ${escapeHtml(time)}</div>`;

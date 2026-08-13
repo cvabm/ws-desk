@@ -3,6 +3,9 @@ import {
   Connect,
   Disconnect,
   Send,
+  RequestHTTP,
+  RecordHTTP,
+  RecordWS,
   GetProfiles,
   GetStatus,
   GetMessages,
@@ -17,25 +20,75 @@ import {
   OpenLogDir,
 } from '../wailsjs/go/main/App';
 import { EventsOn } from '../wailsjs/runtime/runtime';
-import { renderDetailHtml, toggleJsonNode } from './highlight.js';
+import { renderDetailHtml, renderHTTPExchange, renderWSRecord, toggleJsonNode } from './highlight.js';
+import {
+  emptyRow,
+  cloneRows,
+  rowsFromMap,
+  parseQuery,
+  applyQuery,
+  formEncode,
+  parseForm,
+  enabledMap,
+  mergeRequestHeaders,
+  parseAuthorization,
+  guessBodyType,
+  editorHeadersFromRequest,
+  parseHTTPOutPreview,
+  renderKV,
+} from './http-ui.js';
 
 const $ = (id) => document.getElementById(id);
 const THEME_KEY = 'ws-desk-theme';
+
+const HTTP_SCHEMES = new Set(['http', 'https']);
+const ALL_SCHEMES = new Set(['ws', 'wss', 'http', 'https']);
 
 const el = {
   app: $('app'),
   profile: $('profile'),
   url: $('url'),
   protocol: $('protocol'),
+  method: $('method'),
   reconnect: $('reconnect'),
+  reconnectWrap: $('reconnectWrap'),
   btnToggle: $('btnToggle'),
+  btnSendTop: $('btnSendTop'),
+  btnRecord: $('btnRecord'),
   state: $('state'),
+  reqBuilder: $('reqBuilder'),
+  reqTabs: $('reqTabs'),
+  tabParams: $('tabParams'),
+  tabHeaders: $('tabHeaders'),
+  tabAuth: $('tabAuth'),
+  tabBody: $('tabBody'),
+  tabResponse: $('tabResponse'),
+  paramRows: $('paramRows'),
+  headerRows: $('headerRows'),
+  formRows: $('formRows'),
+  resHeaderRows: $('resHeaderRows'),
+  resStatusCode: $('resStatusCode'),
+  resStatusText: $('resStatusText'),
+  resBody: $('resBody'),
+  btnFormatRes: $('btnFormatRes'),
+  authType: $('authType'),
+  authToken: $('authToken'),
+  authUser: $('authUser'),
+  authPass: $('authPass'),
   list: $('list'),
   listTitle: $('listTitle'),
   detail: $('detail'),
+  btnFill: $('btnFill'),
   payload: $('payload'),
+  payloadIn: $('payloadIn'),
+  capOut: $('capOut'),
+  capIn: $('capIn'),
   btnSend: $('btnSend'),
   btnFormat: $('btnFormat'),
+  btnFormatHttp: $('btnFormatHttp'),
+  reqPane: $('reqPane'),
+  detailTitle: $('detailTitle'),
+  composer: document.querySelector('.composer'),
   btnResend: $('btnResend'),
   btnClear: $('btnClear'),
   footer: $('footer'),
@@ -63,10 +116,33 @@ let selectedId = 0;
 let lastSent = '';
 let historyMode = false;
 let activeHistKeyword = '';
+let historySessionURL = '';
+let historySessionProtocol = '';
+let fillFlashTimer = 0;
 /** @type {any[]} */
 let profiles = [];
 let histSearchTimer = 0;
 let histSearchSeq = 0;
+/** @type {{key:string,value:string,enabled:boolean}[]} */
+let paramRows = [emptyRow()];
+/** @type {{key:string,value:string,enabled:boolean}[]} */
+let headerRows = [emptyRow()];
+/** @type {{key:string,value:string,enabled:boolean}[]} */
+let formRows = [emptyRow()];
+/** @type {{key:string,value:string,enabled:boolean}[]} */
+let resHeaderRows = [emptyRow()];
+let lastAutoStatusText = 'OK';
+let authState = { type: 'none', token: '', user: '', pass: '' };
+let bodyType = 'json';
+let reqTab = 'body';
+let syncingQuery = false;
+let sending = false;
+let persistTimer = 0;
+
+function schedulePersist() {
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => persistProfile(), 400);
+}
 
 function dirLabel(dir) {
   if (dir === 'out') return '→';
@@ -122,11 +198,18 @@ function clearListUI() {
   el.list.innerHTML = '';
   selectedId = 0;
   setDetailEmpty('选择一条消息');
+  setFillButton(false);
 }
 
 function setState(status) {
   const s = (status?.state || 'idle').toLowerCase();
-  el.state.textContent = s;
+  const kind = (status?.kind || '').toLowerCase();
+  let label = s;
+  if (s === 'open' && kind === 'http') {
+    const sch = urlScheme(status?.url);
+    label = sch === 'https' ? 'https' : 'http';
+  }
+  el.state.textContent = label;
   el.state.className = 'state ' + s;
   el.btnToggle.textContent = s === 'open' || s === 'connecting' || s === 'reconnecting' ? '断开' : '连接';
   el.btnToggle.classList.toggle('on', s === 'open' || s === 'connecting' || s === 'reconnecting');
@@ -146,6 +229,7 @@ function appendMsg(m, scroll = true) {
     <span class="b">${m.bytes || 0}b</span>
   `;
   row.querySelector('.p').textContent = preview(m.pretty || m.text);
+  row.title = '点击填回请求栏';
   row.addEventListener('click', () => selectMsg(m.id));
   el.list.appendChild(row);
 
@@ -189,16 +273,30 @@ function selectMsg(id) {
   const m = store.get(id);
   if (!m) {
     setDetailEmpty('选择一条消息');
+    setFillButton(false);
     return;
   }
-  setDetailHtml(renderDetailHtml(m.dir, m.time, m.pretty || m.text));
+  if (m.exchange) {
+    setDetailHtml(renderHTTPExchange(m.exchange));
+  } else if (m.ws) {
+    setDetailHtml(renderWSRecord(m.ws));
+  } else {
+    setDetailHtml(renderDetailHtml(m.dir, m.time, m.pretty || m.text));
+  }
+  const ok = fillFromMessage(m);
+  setFillButton(ok);
+  if (ok) flashFilled();
 }
 
 function setHistoryMode(on, label = '') {
   historyMode = on;
   el.histBanner.classList.toggle('hidden', !on);
   el.msgFilter.classList.toggle('hidden', !on);
-  el.listTitle.textContent = on ? '历史消息' : '消息';
+  el.listTitle.textContent = on
+    ? '历史消息'
+    : isHTTPMode()
+      ? '记录'
+      : '消息';
   if (on) {
     el.histLabel.textContent = label || '历史模式';
   } else {
@@ -209,6 +307,8 @@ function setHistoryMode(on, label = '') {
 }
 
 async function exitHistoryMode() {
+  historySessionURL = '';
+  historySessionProtocol = '';
   setHistoryMode(false);
   clearListUI();
   const existing = await GetMessages(0, 500);
@@ -234,8 +334,11 @@ function showSession(detail, keyword = '') {
   if (!detail) return;
   allHistoryMsgs = detail.messages || [];
   const day = detail.info?.day || '';
-  const name = day || detail.info?.name || 'log';
+  const host = detail.info?.host || '';
+  const name = [day, host].filter(Boolean).join(' · ') || detail.info?.name || 'log';
   const url = detail.url || detail.info?.url || '';
+  historySessionURL = url;
+  historySessionProtocol = detail.protocol || '';
   const n = allHistoryMsgs.length;
   const kw = (keyword || '').trim();
   activeHistKeyword = kw;
@@ -249,16 +352,474 @@ function showSession(detail, keyword = '') {
   closeHistoryModal();
 }
 
+/* —— scheme / http —— */
+function urlScheme(url) {
+  const m = String(url || '').trim().match(/^([a-z][a-z0-9+.-]*):\/\//i);
+  return m ? m[1].toLowerCase() : '';
+}
+
+function currentScheme() {
+  const s = urlScheme(el.url?.value);
+  return ALL_SCHEMES.has(s) ? s : '';
+}
+
+function isHTTPMode() {
+  return HTTP_SCHEMES.has(currentScheme());
+}
+
+function applyTransportFromURL() {
+  applyTransportUI(currentScheme());
+}
+
+function placePayload(http) {
+  if (!el.payload) return;
+  if (http && el.tabBody && el.payload.parentElement !== el.tabBody) {
+    el.tabBody.appendChild(el.payload);
+  } else if (!http && el.composer && el.payload.parentElement !== el.composer) {
+    const before = el.payloadIn || el.composer.querySelector('.composer-actions') || el.composer.firstChild;
+    el.composer.insertBefore(el.payload, before);
+  }
+}
+
+function applyTransportUI(scheme) {
+  const http = HTTP_SCHEMES.has(scheme);
+  el.app?.classList.toggle('http', http);
+  el.protocol.classList.toggle('hidden', http);
+  el.method.classList.toggle('hidden', !http);
+  el.reconnectWrap?.classList.toggle('hidden', http);
+  el.btnToggle?.classList.toggle('hidden', http);
+  el.btnSendTop?.classList.toggle('hidden', !http);
+  el.btnRecord?.classList.remove('hidden');
+  if (el.btnRecord) {
+    el.btnRecord.title = http
+      ? '不发送，只保存当前请求和响应'
+      : '不发送，只保存当前发送和返回';
+  }
+  el.payloadIn?.classList.toggle('hidden', http);
+  el.capOut?.classList.toggle('hidden', http);
+  el.capIn?.classList.toggle('hidden', http);
+  el.state?.classList.toggle('hidden', http);
+  el.reqPane?.classList.toggle('hidden', !http);
+  placePayload(http);
+  if (el.detailTitle) el.detailTitle.textContent = http ? '响应' : '详情';
+  if (el.listTitle && !historyMode) el.listTitle.textContent = http ? '记录' : '消息';
+  if (http) {
+    syncParamsFromURL();
+    renderRequestEditor();
+    applyBodyTypeUI();
+    setReqTab(reqTab || 'body');
+  }
+  if (el.payload) {
+    el.payload.placeholder = http
+      ? '请求体  ·  Ctrl+Enter 发送'
+      : '{"cmd":"ping"}  ·  Ctrl+Enter 发送';
+  }
+}
+
+async function dropWSIfHTTP() {
+  if (!isHTTPMode()) return;
+  try {
+    const st = await GetStatus();
+    if (st.kind === 'ws' && (st.state === 'open' || st.state === 'connecting' || st.state === 'reconnecting')) {
+      await Disconnect();
+    }
+  } catch (_) {}
+}
+
+function currentURL() {
+  return (el.url?.value || '').trim();
+}
+
+function isHTTPURL(url) {
+  return HTTP_SCHEMES.has(urlScheme(url));
+}
+
+function currentBodyType() {
+  const picked = document.querySelector('input[name="bodyType"]:checked');
+  return picked?.value || bodyType || 'json';
+}
+
+function applyBodyTypeUI() {
+  bodyType = currentBodyType();
+  el.app?.classList.toggle('body-none', bodyType === 'none');
+  el.app?.classList.toggle('body-form', bodyType === 'form');
+  el.formRows?.classList.toggle('hidden', bodyType !== 'form');
+}
+
+function syncAuthFields() {
+  const t = el.authType?.value || 'none';
+  authState.type = t;
+  el.authToken?.classList.toggle('hidden', t !== 'bearer');
+  el.authUser?.classList.toggle('hidden', t !== 'basic');
+  el.authPass?.classList.toggle('hidden', t !== 'basic');
+}
+
+function setReqTab(tab) {
+  reqTab = tab || 'body';
+  for (const btn of el.reqTabs?.querySelectorAll('.req-tab') || []) {
+    btn.classList.toggle('on', btn.dataset.tab === reqTab);
+  }
+  el.tabParams?.classList.toggle('hidden', reqTab !== 'params');
+  el.tabHeaders?.classList.toggle('hidden', reqTab !== 'headers');
+  el.tabAuth?.classList.toggle('hidden', reqTab !== 'auth');
+  el.tabBody?.classList.toggle('hidden', reqTab !== 'body');
+  el.tabResponse?.classList.toggle('hidden', reqTab !== 'response');
+}
+
+function syncParamsFromURL() {
+  if (syncingQuery) return;
+  paramRows = parseQuery(currentURL());
+  if (el.paramRows) renderKV(el.paramRows, paramRows, onParamsChange);
+}
+
+function onParamsChange() {
+  const url = currentURL();
+  if (!urlScheme(url)) return;
+  syncingQuery = true;
+  const next = applyQuery(url, paramRows);
+  if (next) el.url.value = next;
+  syncingQuery = false;
+  schedulePersist();
+}
+
+function renderRequestEditor() {
+  if (el.paramRows) renderKV(el.paramRows, paramRows, onParamsChange);
+  if (el.headerRows) renderKV(el.headerRows, headerRows, schedulePersist);
+  if (el.formRows) renderKV(el.formRows, formRows, schedulePersist);
+  if (el.resHeaderRows) renderKV(el.resHeaderRows, resHeaderRows);
+}
+
+const HTTP_STATUS_TEXT = {
+  200: 'OK',
+  201: 'Created',
+  204: 'No Content',
+  301: 'Moved Permanently',
+  302: 'Found',
+  304: 'Not Modified',
+  400: 'Bad Request',
+  401: 'Unauthorized',
+  403: 'Forbidden',
+  404: 'Not Found',
+  409: 'Conflict',
+  422: 'Unprocessable Entity',
+  500: 'Internal Server Error',
+  502: 'Bad Gateway',
+  503: 'Service Unavailable',
+};
+
+function parseStatusCode(raw, fallback = 200) {
+  const n = parseInt(String(raw || '').trim(), 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+function syncStatusText() {
+  const code = parseStatusCode(el.resStatusCode?.value, 0);
+  const known = HTTP_STATUS_TEXT[code] || '';
+  const cur = el.resStatusText?.value || '';
+  if (!cur || cur === lastAutoStatusText) {
+    if (el.resStatusText) el.resStatusText.value = known;
+    lastAutoStatusText = known;
+  }
+}
+
+function currentRecordedExchange() {
+  const opts = currentOpts();
+  const code = parseStatusCode(el.resStatusCode?.value, 200);
+  const text = (el.resStatusText?.value || '').trim();
+  const resBody = el.resBody?.value || '';
+  return {
+    method: opts.method,
+    url: opts.url,
+    status: text ? `${code} ${text}` : String(code),
+    statusCode: code,
+    timeMs: 0,
+    bytes: resBody.length,
+    truncated: false,
+    reqHeaders: opts.headers,
+    resHeaders: enabledMap(resHeaderRows),
+    reqBody: currentBody(),
+    resBody,
+    manual: true,
+  };
+}
+
+function currentBody() {
+  const t = currentBodyType();
+  if (t === 'none') return '';
+  if (t === 'form') return formEncode(formRows);
+  return el.payload.value;
+}
+
+function loadAuthFromProfile(p) {
+  authState = {
+    type: p?.authType || 'none',
+    token: p?.authToken || '',
+    user: p?.authUser || '',
+    pass: p?.authPass || '',
+  };
+  if (el.authType) el.authType.value = authState.type;
+  if (el.authToken) el.authToken.value = authState.token;
+  if (el.authUser) el.authUser.value = authState.user;
+  if (el.authPass) el.authPass.value = authState.pass;
+  syncAuthFields();
+}
+
+function loadHeadersFromProfile(p) {
+  if (Array.isArray(p?.headerList) && p.headerList.length) {
+    headerRows = cloneRows(p.headerList);
+  } else {
+    headerRows = rowsFromMap(p?.headers);
+  }
+}
+
+function loadBodyTypeFromProfile(p) {
+  bodyType = p?.bodyType || 'json';
+  const radio = document.querySelector(`input[name="bodyType"][value="${bodyType}"]`);
+  if (radio) radio.checked = true;
+  applyBodyTypeUI();
+}
+
+function hostFromURL(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return '';
+  try {
+    const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `ws://${raw.replace(/^\/\//, '')}`;
+    return new URL(withScheme).hostname || '';
+  } catch {
+    return '';
+  }
+}
+
+function profileNameFromURL(url) {
+  const host = hostFromURL(url);
+  if (!host) return '';
+  const s = urlScheme(url);
+  return `${ALL_SCHEMES.has(s) ? s : 'ws'}://${host}`;
+}
+
+function setFillButton(on) {
+  if (!el.btnFill) return;
+  el.btnFill.classList.toggle('hidden', !on);
+  if (!on) {
+    el.btnFill.textContent = '填回';
+    clearTimeout(fillFlashTimer);
+  }
+}
+
+function flashFilled() {
+  if (!el.btnFill || el.btnFill.classList.contains('hidden')) return;
+  el.btnFill.textContent = '已填回';
+  clearTimeout(fillFlashTimer);
+  fillFlashTimer = setTimeout(() => {
+    if (el.btnFill) el.btnFill.textContent = '填回';
+  }, 900);
+}
+
+function siblingFillSource(m) {
+  if (!m) return null;
+  const ids = [...el.list.children].map((n) => Number(n.dataset.id));
+  const idx = ids.indexOf(m.id);
+  if (idx < 0) return null;
+  const at = (i) => store.get(ids[i]);
+  const tagged = (n) => (n?.exchange || n?.ws ? n : null);
+  if (m.dir === 'out') {
+    for (let i = idx + 1; i < ids.length && i <= idx + 4; i++) {
+      const n = at(i);
+      if (!n || n.dir === 'sys') continue;
+      return tagged(n);
+    }
+  } else if (m.dir === 'in') {
+    for (let i = idx - 1; i >= 0 && i >= idx - 4; i--) {
+      const n = at(i);
+      if (!n || n.dir === 'sys') continue;
+      return tagged(n);
+    }
+  } else {
+    for (let i = idx - 1; i >= 0 && i >= idx - 4; i--) {
+      const n = at(i);
+      if (tagged(n)) return n;
+      if (n && n.dir !== 'sys') break;
+    }
+    for (let i = idx + 1; i < ids.length && i <= idx + 4; i++) {
+      const n = at(i);
+      if (tagged(n)) return n;
+      if (n && n.dir !== 'sys') break;
+    }
+  }
+  return null;
+}
+
+function applyAuthState(auth) {
+  authState = {
+    type: auth?.type || 'none',
+    token: auth?.token || '',
+    user: auth?.user || '',
+    pass: auth?.pass || '',
+  };
+  if (el.authType) el.authType.value = authState.type;
+  if (el.authToken) el.authToken.value = authState.token;
+  if (el.authUser) el.authUser.value = authState.user;
+  if (el.authPass) el.authPass.value = authState.pass;
+  syncAuthFields();
+}
+
+function setBodyType(type) {
+  bodyType = type || 'json';
+  const radio = document.querySelector(`input[name="bodyType"][value="${bodyType}"]`);
+  if (radio) radio.checked = true;
+  applyBodyTypeUI();
+}
+
+function fillResponseTab(ex) {
+  const code = parseStatusCode(ex?.statusCode || ex?.status, 200);
+  if (el.resStatusCode) el.resStatusCode.value = String(code);
+  const st = String(ex?.status || '');
+  const named = st.match(/^\s*\d+\s+(.+)$/);
+  const text = named ? named[1] : (HTTP_STATUS_TEXT[code] || '');
+  if (el.resStatusText) el.resStatusText.value = text;
+  lastAutoStatusText = HTTP_STATUS_TEXT[code] || text;
+  resHeaderRows = rowsFromMap(ex?.resHeaders);
+  if (el.resBody) el.resBody.value = ex?.resBody || '';
+}
+
+function selectProfileHost(url) {
+  const name = profileNameFromURL(url);
+  if (name && [...el.profile.options].some((o) => o.value === name)) {
+    el.profile.value = name;
+  }
+}
+
+function applyHTTPExchange(ex) {
+  if (!ex?.url) return false;
+  el.url.value = ex.url;
+  const method = (ex.method || 'GET').toUpperCase();
+  if (el.method && [...el.method.options].some((o) => o.value === method)) {
+    el.method.value = method;
+  } else if (el.method) {
+    el.method.value = 'GET';
+  }
+  const auth = parseAuthorization(ex.reqHeaders);
+  applyAuthState(auth);
+  const bodyTypeGuess = guessBodyType(ex.reqHeaders, ex.reqBody, ex.method);
+  setBodyType(bodyTypeGuess);
+  headerRows = editorHeadersFromRequest(ex.reqHeaders, {
+    stripAuth: auth.type !== 'none',
+    stripContentType: bodyTypeGuess !== 'none',
+  });
+  if (bodyTypeGuess === 'form') {
+    formRows = parseForm(ex.reqBody);
+    if (el.payload) el.payload.value = '';
+  } else {
+    formRows = [emptyRow()];
+    if (el.payload) el.payload.value = bodyTypeGuess === 'none' ? '' : (ex.reqBody || '');
+  }
+  fillResponseTab(ex);
+  lastSent = currentBody();
+  applyTransportFromURL();
+  syncParamsFromURL();
+  renderRequestEditor();
+  selectProfileHost(ex.url);
+  setReqTab(String(ex.reqBody || '').trim() ? 'body' : 'params');
+  persistProfile();
+  dropWSIfHTTP();
+  return true;
+}
+
+function applyWSRecord(rec) {
+  if (!rec) return false;
+  if (rec.url) el.url.value = rec.url;
+  if (el.protocol) el.protocol.value = rec.protocol || '';
+  if (el.payload) el.payload.value = rec.out || '';
+  if (el.payloadIn) el.payloadIn.value = rec.in || '';
+  lastSent = rec.out || lastSent;
+  applyTransportFromURL();
+  selectProfileHost(rec.url);
+  persistProfile();
+  return Boolean(rec.url || rec.out || rec.in);
+}
+
+function fillPlainMessage(m) {
+  if (!m || (m.dir !== 'out' && m.dir !== 'in')) return false;
+  const hint = parseHTTPOutPreview(m.text);
+  const url = historySessionURL || el.url.value;
+  const sch = urlScheme(hint?.url || url || currentURL());
+  if (hint) {
+    return applyHTTPExchange({
+      method: hint.method,
+      url: hint.url,
+      reqHeaders: {},
+      reqBody: '',
+      resHeaders: {},
+      resBody: '',
+    });
+  }
+  if (HTTP_SCHEMES.has(sch) || isHTTPMode()) {
+    if (historySessionURL) {
+      el.url.value = historySessionURL;
+      applyTransportFromURL();
+    }
+    if (m.dir === 'out') {
+      if (el.payload) el.payload.value = m.text || '';
+      setBodyType(guessBodyType({}, m.text, el.method?.value));
+      lastSent = currentBody();
+      setReqTab('body');
+    } else if (el.resBody) {
+      el.resBody.value = m.text || '';
+      setReqTab('response');
+    }
+    persistProfile();
+    return true;
+  }
+  if (historySessionURL) {
+    el.url.value = historySessionURL;
+    const proto = historySessionProtocol;
+    if (el.protocol && proto && proto !== 'ws' && proto !== 'wss' && !HTTP_SCHEMES.has(proto.toLowerCase())) {
+      el.protocol.value = proto;
+    }
+    applyTransportFromURL();
+  }
+  if (m.dir === 'out' && el.payload) {
+    el.payload.value = m.text || '';
+    lastSent = el.payload.value;
+  }
+  if (m.dir === 'in' && el.payloadIn) el.payloadIn.value = m.text || '';
+  persistProfile();
+  return true;
+}
+
+function fillFromMessage(m) {
+  if (!m) return false;
+  if (m.exchange) return applyHTTPExchange(m.exchange);
+  if (m.ws) return applyWSRecord(m.ws);
+  const near = siblingFillSource(m);
+  if (near?.exchange) return applyHTTPExchange(near.exchange);
+  if (near?.ws) return applyWSRecord(near.ws);
+  return fillPlainMessage(m);
+}
+
 /* —— profiles —— */
 function applyProfile(p) {
   if (!p) return;
   el.url.value = p.url || '';
   el.protocol.value = p.protocol || '';
+  const method = (p.method || 'GET').toUpperCase();
+  if (el.method && [...el.method.options].some((o) => o.value === method)) {
+    el.method.value = method;
+  } else if (el.method) {
+    el.method.value = 'GET';
+  }
   el.reconnect.checked = p.reconnect !== false;
+  loadHeadersFromProfile(p);
+  loadAuthFromProfile(p);
+  loadBodyTypeFromProfile(p);
+  applyTransportFromURL();
+  syncParamsFromURL();
+  renderRequestEditor();
+  dropWSIfHTTP();
 }
 
-async function loadProfiles() {
-  profiles = (await GetProfiles()) || [];
+function renderProfileSelect(selected) {
+  const cur = selected || el.profile.value;
   el.profile.innerHTML = '';
   for (const p of profiles) {
     const opt = document.createElement('option');
@@ -266,23 +827,83 @@ async function loadProfiles() {
     opt.textContent = p.name;
     el.profile.appendChild(opt);
   }
-  if (profiles.length) {
+  if (cur && profiles.some((p) => p.name === cur)) {
+    el.profile.value = cur;
+  } else if (profiles.length) {
     el.profile.value = profiles[0].name;
-    applyProfile(profiles[0]);
   }
+}
+
+async function loadProfiles() {
+  profiles = (await GetProfiles()) || [];
+  renderProfileSelect();
+  if (profiles.length) {
+    const cur = profiles.find((p) => p.name === el.profile.value) || profiles[0];
+    applyProfile(cur);
+  }
+}
+
+function currentHeaders() {
+  const body = currentBody();
+  const t = currentBodyType();
+  return mergeRequestHeaders(headerRows, {
+    type: el.authType?.value || authState.type,
+    token: el.authToken?.value || authState.token,
+    user: el.authUser?.value || authState.user,
+    pass: el.authPass?.value || authState.pass,
+  }, t, Boolean(body) && t !== 'none');
 }
 
 function currentOpts() {
   return {
-    url: el.url.value.trim(),
+    url: currentURL(),
     protocol: el.protocol.value.trim(),
-    headers: {},
+    method: el.method?.value || 'GET',
+    headers: currentHeaders(),
     reconnect: el.reconnect.checked,
     pingSec: 20,
   };
 }
 
+async function persistProfile() {
+  const url = currentURL();
+  const name = profileNameFromURL(url);
+  if (!name) return;
+  authState = {
+    type: el.authType?.value || 'none',
+    token: el.authToken?.value || '',
+    user: el.authUser?.value || '',
+    pass: el.authPass?.value || '',
+  };
+  const p = {
+    name,
+    url,
+    protocol: el.protocol.value.trim(),
+    method: el.method?.value || 'GET',
+    headers: currentHeaders(),
+    headerList: cloneRows(headerRows),
+    authType: authState.type,
+    authToken: authState.token,
+    authUser: authState.user,
+    authPass: authState.pass,
+    bodyType: currentBodyType(),
+    reconnect: el.reconnect.checked,
+    pingSec: 20,
+  };
+  try {
+    await SaveProfile(p);
+    const idx = profiles.findIndex((x) => x.name === name);
+    if (idx >= 0) profiles[idx] = p;
+    else {
+      profiles.push(p);
+      profiles.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    }
+    renderProfileSelect(name);
+  } catch (_) {}
+}
+
 async function toggleConn() {
+  if (isHTTPMode()) return;
   const st = await GetStatus();
   if (st.state === 'open' || st.state === 'connecting' || st.state === 'reconnecting') {
     await Disconnect();
@@ -290,28 +911,129 @@ async function toggleConn() {
   }
   try {
     if (historyMode) await exitHistoryMode();
+    await persistProfile();
     await Connect(currentOpts());
   } catch (e) {
     setDetailEmpty(String(e));
   }
 }
 
+async function ensureWSConnected() {
+  if (!currentURL()) {
+    throw new Error('请先填写 URL');
+  }
+  const st = await GetStatus();
+  const s = (st?.state || '').toLowerCase();
+  if (s === 'open') return;
+  if (s !== 'connecting' && s !== 'reconnecting') {
+    await Connect(currentOpts());
+  }
+}
+
 async function sendMsg() {
-  const text = el.payload.value.trim();
-  if (!text) return;
+  if (sending) return;
+  const opts = currentOpts();
+  const http = isHTTPURL(opts.url);
+  const text = http ? currentBody() : el.payload.value.trim();
+  if (!http && !text) return;
+  setBusy(true);
   try {
     if (historyMode) await exitHistoryMode();
-    await Send(text);
+    await persistProfile();
+    if (http) {
+      const ex = await RequestHTTP(opts, text);
+      if (ex) {
+        setDetailHtml(renderHTTPExchange(ex));
+      }
+    } else {
+      await ensureWSConnected();
+      await Send(text);
+    }
     lastSent = text;
   } catch (e) {
     setDetailEmpty(String(e));
+  } finally {
+    setBusy(false);
   }
 }
 
 async function formatPayload() {
-  const text = el.payload.value;
+  const target = document.activeElement === el.payloadIn ? el.payloadIn : el.payload;
+  const text = target?.value || '';
   if (!text.trim()) return;
-  el.payload.value = await FormatJSON(text);
+  target.value = await FormatJSON(text);
+}
+
+async function formatResBody() {
+  const text = el.resBody?.value || '';
+  if (!text.trim()) return;
+  el.resBody.value = await FormatJSON(text);
+}
+
+function setBusy(on) {
+  sending = on;
+  const method = on ? 'setAttribute' : 'removeAttribute';
+  el.btnSend?.[method]('disabled', 'true');
+  el.btnSendTop?.[method]('disabled', 'true');
+  el.btnRecord?.[method]('disabled', 'true');
+}
+
+async function recordCurrent() {
+  if (isHTTPMode()) {
+    return recordHTTP();
+  }
+  return recordWS();
+}
+
+async function recordHTTP() {
+  if (sending) return;
+  if (!isHTTPMode()) return;
+  const url = currentURL();
+  if (!url) {
+    setDetailEmpty('请先填写 URL');
+    return;
+  }
+  setBusy(true);
+  try {
+    if (historyMode) await exitHistoryMode();
+    await persistProfile();
+    const ex = await RecordHTTP(currentRecordedExchange());
+    if (ex) {
+      setDetailHtml(renderHTTPExchange(ex));
+    }
+  } catch (e) {
+    setDetailEmpty(String(e));
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function recordWS() {
+  if (sending) return;
+  const url = currentURL();
+  if (!url) {
+    setDetailEmpty('请先填写 URL');
+    return;
+  }
+  const outText = el.payload?.value || '';
+  const inText = el.payloadIn?.value || '';
+  if (!outText.trim() && !inText.trim()) {
+    setDetailEmpty('请填写发送或返回数据');
+    return;
+  }
+  setBusy(true);
+  try {
+    if (historyMode) await exitHistoryMode();
+    await persistProfile();
+    const rec = await RecordWS(currentOpts(), outText, inText);
+    if (rec) {
+      setDetailHtml(renderWSRecord(rec));
+    }
+  } catch (e) {
+    setDetailEmpty(String(e));
+  } finally {
+    setBusy(false);
+  }
 }
 
 /* —— history modal —— */
@@ -333,7 +1055,7 @@ function renderHistoryItems(list, keyword) {
   el.histEmpty.classList.toggle('hidden', list.length > 0);
   el.histEmpty.textContent = kw
     ? `没有匹配 “${kw}” 的日志`
-    : '暂无按天日志（ws-YYYY-MM-DD.jsonl），连接后会自动生成';
+    : '暂无日志，发送、记录或连接后会按日期和 IP/域名分开保存';
 
   for (const s of list) {
     const item = document.createElement('div');
@@ -344,8 +1066,8 @@ function renderHistoryItems(list, keyword) {
       <div class="meta"></div>
       <div class="hint hidden"></div>
     `;
-    // prefer day label for daily files
-    item.querySelector('.name').textContent = s.day ? s.day : s.name;
+    const title = [s.day, s.host].filter(Boolean).join('  ·  ');
+    item.querySelector('.name').textContent = title || s.name;
     const right = item.querySelector('.size');
     if (kw && (s.matchCount > 0 || s.matchHint)) {
       right.className = 'hits';
@@ -354,6 +1076,7 @@ function renderHistoryItems(list, keyword) {
       right.textContent = formatSize(s.size || 0);
     }
     const metaBits = [];
+    if (s.host) metaBits.push(s.host);
     if (s.name) metaBits.push(s.name);
     if (s.modTime) metaBits.push(s.modTime);
     if (s.url) metaBits.push(s.url);
@@ -408,6 +1131,7 @@ async function pickSession() {
 
 async function init() {
   initTheme();
+  applyTransportFromURL();
   await loadProfiles();
 
   el.profile.addEventListener('change', () => {
@@ -417,7 +1141,41 @@ async function init() {
 
   el.btnToggle.addEventListener('click', toggleConn);
   el.btnSend.addEventListener('click', sendMsg);
+  el.btnSendTop?.addEventListener('click', sendMsg);
+  el.btnRecord?.addEventListener('click', recordCurrent);
+  el.btnFill?.addEventListener('click', () => {
+    const m = store.get(selectedId);
+    if (fillFromMessage(m)) {
+      setFillButton(true);
+      flashFilled();
+    }
+  });
+  el.btnFormatRes?.addEventListener('click', formatResBody);
+  el.resStatusCode?.addEventListener('input', syncStatusText);
+  el.reqTabs?.addEventListener('click', (e) => {
+    const tab = e.target?.closest?.('.req-tab')?.dataset?.tab;
+    if (tab) setReqTab(tab);
+  });
+  el.authType?.addEventListener('change', () => {
+    syncAuthFields();
+    persistProfile();
+  });
+  el.authToken?.addEventListener('change', persistProfile);
+  el.authUser?.addEventListener('change', persistProfile);
+  el.authPass?.addEventListener('change', persistProfile);
+  for (const radio of document.querySelectorAll('input[name="bodyType"]')) {
+    radio.addEventListener('change', () => {
+      applyBodyTypeUI();
+      persistProfile();
+    });
+  }
+  setReqTab('body');
+  renderRequestEditor();
   el.btnFormat.addEventListener('click', formatPayload);
+  el.btnFormatHttp?.addEventListener('click', () => {
+    if (reqTab === 'response') formatResBody();
+    else formatPayload();
+  });
   el.btnResend.addEventListener('click', () => {
     if (lastSent) {
       el.payload.value = lastSent;
@@ -477,6 +1235,18 @@ async function init() {
       sendMsg();
     }
   });
+  el.resBody?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      recordHTTP();
+    }
+  });
+  el.payloadIn?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      recordWS();
+    }
+  });
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !el.histModal.classList.contains('hidden')) {
@@ -484,26 +1254,25 @@ async function init() {
     }
   });
 
-  const persist = async () => {
-    const name = el.profile.value;
-    if (!name) return;
-    const p = {
-      name,
-      url: el.url.value.trim(),
-      protocol: el.protocol.value.trim(),
-      headers: {},
-      reconnect: el.reconnect.checked,
-      pingSec: 20,
-    };
-    try {
-      await SaveProfile(p);
-      const idx = profiles.findIndex((x) => x.name === name);
-      if (idx >= 0) profiles[idx] = p;
-    } catch (_) {}
-  };
-  el.url.addEventListener('change', persist);
-  el.protocol.addEventListener('change', persist);
-  el.reconnect.addEventListener('change', persist);
+  el.url.addEventListener('change', async () => {
+    applyTransportFromURL();
+    const url = currentURL();
+    const name = profileNameFromURL(url);
+    const existing = name ? profiles.find((x) => x.name === name) : null;
+    if (existing && el.profile.value !== name) {
+      applyProfile({ ...existing, url });
+    } else {
+      syncParamsFromURL();
+    }
+    await persistProfile();
+  });
+  el.url.addEventListener('input', () => {
+    applyTransportFromURL();
+    if (isHTTPMode()) syncParamsFromURL();
+  });
+  el.protocol.addEventListener('change', persistProfile);
+  el.method.addEventListener('change', persistProfile);
+  el.reconnect.addEventListener('change', persistProfile);
 
   EventsOn('message', (m) => {
     if (historyMode) return;
@@ -518,7 +1287,7 @@ async function init() {
   el.list.scrollTop = el.list.scrollHeight;
 
   const paths = await GetPaths();
-  el.footer.textContent = `logs: ${paths.logs}   ·   profiles: ${paths.profiles}`;
+  el.footer.textContent = `requests: ${paths.requests}   ·   servers: ${paths.servers}`;
 }
 
 init().catch((e) => {

@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,8 +21,10 @@ type wsClient struct {
 
 	mu       sync.Mutex
 	conn     *websocket.Conn
+	httpDoer *http.Client
 	cancel   context.CancelFunc
 	opts     ConnectOptions
+	kind     string // ws | http
 	state    string
 	errMsg   string
 	session  string
@@ -40,8 +44,10 @@ func (c *wsClient) Status() Status {
 	defer c.mu.Unlock()
 	return Status{
 		State:    c.state,
+		Kind:     c.kind,
 		URL:      c.opts.URL,
 		Protocol: c.opts.Protocol,
+		Method:   c.opts.Method,
 		Session:  c.session,
 		MsgCount: len(c.msgs),
 		Error:    c.errMsg,
@@ -75,13 +81,19 @@ func (c *wsClient) Clear() {
 }
 
 func (c *wsClient) Connect(opts ConnectOptions) error {
-	if opts.URL == "" {
-		return fmt.Errorf("url is required")
+	kind, canon, err := parseDialURL(opts.URL, "")
+	if err != nil {
+		return err
+	}
+	opts.URL = canon
+	if kind == kindHTTP {
+		return fmt.Errorf("http/https 无需连接，直接发送")
 	}
 	c.Disconnect()
 
 	c.mu.Lock()
 	c.opts = opts
+	c.kind = kindWS
 	c.errMsg = ""
 	c.state = "connecting"
 	c.mu.Unlock()
@@ -112,6 +124,10 @@ func (c *wsClient) Disconnect() {
 		c.logger.Close()
 		c.logger = nil
 	}
+	if c.httpDoer != nil {
+		c.httpDoer.CloseIdleConnections()
+		c.httpDoer = nil
+	}
 	c.state = "closed"
 	c.session = ""
 	c.mu.Unlock()
@@ -119,6 +135,12 @@ func (c *wsClient) Disconnect() {
 }
 
 func (c *wsClient) Send(text string) error {
+	if text == "" {
+		return fmt.Errorf("empty message")
+	}
+	if err := c.waitUntilOpen(15 * time.Second); err != nil {
+		return err
+	}
 	c.mu.Lock()
 	conn := c.conn
 	c.mu.Unlock()
@@ -130,6 +152,270 @@ func (c *wsClient) Send(text string) error {
 	}
 	c.push("out", text)
 	return nil
+}
+
+func (c *wsClient) waitUntilOpen(timeout time.Duration) error {
+	c.mu.Lock()
+	if c.conn != nil && c.state == "open" {
+		c.mu.Unlock()
+		return nil
+	}
+	want := c.wantOpen.Load()
+	c.mu.Unlock()
+	if !want {
+		return fmt.Errorf("not connected")
+	}
+
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(40 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("连接超时")
+		}
+		if c.app != nil && c.app.ctx != nil {
+			select {
+			case <-ticker.C:
+			case <-c.app.ctx.Done():
+				return fmt.Errorf("not connected")
+			}
+		} else {
+			<-ticker.C
+		}
+
+		c.mu.Lock()
+		conn := c.conn
+		state := c.state
+		errMsg := c.errMsg
+		reconnect := c.opts.Reconnect
+		want := c.wantOpen.Load()
+		c.mu.Unlock()
+
+		if conn != nil && state == "open" {
+			return nil
+		}
+		if !want || (state == "closed" && !reconnect) {
+			if errMsg != "" {
+				return fmt.Errorf("%s", errMsg)
+			}
+			return fmt.Errorf("not connected")
+		}
+	}
+}
+
+func (c *wsClient) RequestHTTP(opts ConnectOptions, body string) (*HTTPExchange, error) {
+	kind, canon, err := parseDialURL(opts.URL, "")
+	if err != nil {
+		return nil, err
+	}
+	if kind != kindHTTP {
+		return nil, fmt.Errorf("url must be http:// or https://")
+	}
+	opts.URL = canon
+
+	doer, err := c.beginHTTP(opts, true)
+	if err != nil {
+		return nil, err
+	}
+	return c.doHTTP(opts, doer, body)
+}
+
+// RecordHTTP stores a request/response pair in the live list and daily log without sending.
+func (c *wsClient) RecordHTTP(ex HTTPExchange) (*HTTPExchange, error) {
+	kind, canon, err := parseDialURL(ex.URL, "")
+	if err != nil {
+		return nil, err
+	}
+	if kind != kindHTTP {
+		return nil, fmt.Errorf("url must be http:// or https://")
+	}
+	ex.URL = canon
+	normalizeRecordedExchange(&ex)
+
+	opts := ConnectOptions{
+		URL:     ex.URL,
+		Method:  ex.Method,
+		Headers: ex.ReqHeaders,
+	}
+	if _, err := c.beginHTTP(opts, false); err != nil {
+		return nil, err
+	}
+
+	ptr := &ex
+	c.pushEx("out", formatHTTPOut(ex.Method, ex.URL, ex.ReqBody), ptr)
+	c.push("sys", fmt.Sprintf("recorded  http %s  %db", ex.Status, ex.Bytes))
+	c.pushEx("in", formatHTTPIn(ex.Status, ex.ResBody, false), ptr)
+	return ptr, nil
+}
+
+// RecordWS stores a send/receive pair in the live list and daily log without sending.
+func (c *wsClient) RecordWS(opts ConnectOptions, outText, inText string) (*WSRecord, error) {
+	kind, canon, err := parseDialURL(opts.URL, "ws")
+	if err != nil {
+		return nil, err
+	}
+	if kind != kindWS {
+		return nil, fmt.Errorf("url must be ws:// or wss://")
+	}
+	opts.URL = canon
+	if strings.TrimSpace(outText) == "" && strings.TrimSpace(inText) == "" {
+		return nil, fmt.Errorf("out or in text is required")
+	}
+
+	rec := &WSRecord{
+		URL:      canon,
+		Protocol: strings.TrimSpace(opts.Protocol),
+		Out:      outText,
+		In:       inText,
+		Manual:   true,
+	}
+	if err := c.beginWSRecord(opts); err != nil {
+		return nil, err
+	}
+	if outText != "" {
+		c.pushWS("out", outText, rec)
+	}
+	c.push("sys", fmt.Sprintf("recorded  ws  out=%db  in=%db", len(outText), len(inText)))
+	if inText != "" {
+		c.pushWS("in", inText, rec)
+	}
+	return rec, nil
+}
+
+func (c *wsClient) beginWSRecord(opts ConnectOptions) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	live := c.conn != nil || c.wantOpen.Load()
+	host := urlHostname(opts.URL)
+	if c.logger != nil && c.logger.Host() != host && !live {
+		c.logger.Close()
+		c.logger = nil
+		c.session = ""
+	}
+	if c.logger == nil {
+		proto := strings.TrimSpace(opts.Protocol)
+		if proto == "" {
+			proto = "ws"
+		}
+		logger, logErr := newSessionLogger(c.app.requestsDir(), opts.URL, proto)
+		if logErr != nil {
+			return logErr
+		}
+		c.logger = logger
+		c.session = logger.SessionID()
+	}
+	if !live {
+		c.opts = opts
+		c.kind = kindWS
+		if c.state == "" {
+			c.state = "idle"
+		}
+		c.errMsg = ""
+	}
+	return nil
+}
+
+func (c *wsClient) beginHTTP(opts ConnectOptions, needDoer bool) (*http.Client, error) {
+	c.mu.Lock()
+	needDrop := c.conn != nil || c.wantOpen.Load()
+	c.mu.Unlock()
+	if needDrop {
+		c.Disconnect()
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var doer *http.Client
+	if needDoer {
+		if c.httpDoer == nil {
+			c.httpDoer = newHTTPDoer()
+		}
+		doer = c.httpDoer
+	}
+	host := urlHostname(opts.URL)
+	if c.logger != nil && c.logger.Host() != host {
+		c.logger.Close()
+		c.logger = nil
+		c.session = ""
+	}
+	if c.logger == nil {
+		logger, logErr := newSessionLogger(c.app.requestsDir(), opts.URL, opts.Method)
+		if logErr != nil {
+			return nil, logErr
+		}
+		c.logger = logger
+		c.session = logger.SessionID()
+	}
+	c.opts = opts
+	c.kind = kindHTTP
+	c.state = "idle"
+	c.errMsg = ""
+	return doer, nil
+}
+
+func (c *wsClient) doHTTP(opts ConnectOptions, doer *http.Client, body string) (*HTTPExchange, error) {
+	ex := &HTTPExchange{
+		Method:     normalizeHTTPMethod(opts.Method, body),
+		URL:        opts.URL,
+		ReqBody:    body,
+		ReqHeaders: map[string]string{},
+		ResHeaders: map[string]string{},
+	}
+	if doer == nil {
+		ex.Error = "http client missing"
+		return ex, fmt.Errorf("http client missing")
+	}
+
+	method := ex.Method
+	var reader io.Reader
+	reqBody := body
+	if methodOmitsBody(method) {
+		reqBody = ""
+		ex.ReqBody = ""
+		reader = nil
+	} else if body != "" {
+		reader = strings.NewReader(body)
+	}
+
+	req, err := http.NewRequest(method, opts.URL, reader)
+	if err != nil {
+		ex.Error = err.Error()
+		return ex, err
+	}
+	applyHTTPHeaders(req, opts.Headers, reqBody)
+	ex.ReqHeaders = flattenHeader(req.Header)
+
+	c.pushEx("out", formatHTTPOut(method, opts.URL, reqBody), ex)
+	start := time.Now()
+	resp, err := doer.Do(req)
+	ex.TimeMs = time.Since(start).Milliseconds()
+	if err != nil {
+		ex.Error = err.Error()
+		c.push("sys", "http error: "+err.Error())
+		return ex, err
+	}
+	defer resp.Body.Close()
+
+	text, n, truncated, err := readHTTPBody(resp.Body)
+	ex.Status = resp.Status
+	ex.StatusCode = resp.StatusCode
+	ex.Bytes = int(n)
+	ex.Truncated = truncated
+	ex.ResHeaders = flattenHeader(resp.Header)
+	ex.ResBody = text
+	if err != nil {
+		ex.Error = err.Error()
+		c.push("sys", fmt.Sprintf("http %s  %dms  read error: %s", resp.Status, ex.TimeMs, err.Error()))
+		return ex, err
+	}
+	note := fmt.Sprintf("http %s  %dms  %db", resp.Status, ex.TimeMs, n)
+	if truncated {
+		note += "  truncated"
+	}
+	c.push("sys", note)
+	c.pushEx("in", formatHTTPIn(resp.Status, text, truncated), ex)
+	return ex, nil
 }
 
 func (c *wsClient) dialLoop(ep uint64) {
@@ -210,7 +496,7 @@ func (c *wsClient) dialOnce(ep uint64) error {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	logger, logErr := newSessionLogger(c.app.logDir(), opts.URL, opts.Protocol)
+	logger, logErr := newSessionLogger(c.app.requestsDir(), opts.URL, opts.Protocol)
 	if logErr != nil {
 		cancel()
 		_ = conn.Close()
@@ -318,18 +604,42 @@ func (c *wsClient) cleanupConn(conn *websocket.Conn, cancel context.CancelFunc, 
 }
 
 func (c *wsClient) push(dir, text string) {
+	c.pushEx(dir, text, nil)
+}
+
+func (c *wsClient) pushWS(dir, text string, rec *WSRecord) {
 	pretty := text
 	if dir == "in" || dir == "out" {
 		pretty = prettyJSON(text)
 	}
-	m := Msg{
+	c.emitMsg(Msg{
 		ID:     c.nextID.Add(1),
 		Dir:    dir,
 		Time:   beijingNow(),
 		Text:   text,
 		Pretty: pretty,
 		Bytes:  len(text),
+		WS:     rec,
+	})
+}
+
+func (c *wsClient) pushEx(dir, text string, ex *HTTPExchange) {
+	pretty := text
+	if dir == "in" || dir == "out" {
+		pretty = prettyJSON(text)
 	}
+	c.emitMsg(Msg{
+		ID:       c.nextID.Add(1),
+		Dir:      dir,
+		Time:     beijingNow(),
+		Text:     text,
+		Pretty:   pretty,
+		Bytes:    len(text),
+		Exchange: ex,
+	})
+}
+
+func (c *wsClient) emitMsg(m Msg) {
 	c.mu.Lock()
 	c.msgs = append(c.msgs, m)
 	if len(c.msgs) > maxMessages {
@@ -339,8 +649,8 @@ func (c *wsClient) push(dir, text string) {
 	c.mu.Unlock()
 
 	if logger != nil {
-		if dir == "sys" {
-			logger.WriteSys("note", text)
+		if m.Dir == "sys" {
+			logger.WriteSys("note", m.Text)
 		} else {
 			logger.WriteMsg(m)
 		}

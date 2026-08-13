@@ -21,6 +21,7 @@ type SessionInfo struct {
 	Size       int64  `json:"size"`
 	ModTime    string `json:"modTime"`
 	URL        string `json:"url,omitempty"`
+	Host       string `json:"host,omitempty"`
 	Day        string `json:"day,omitempty"`
 	MatchCount int    `json:"matchCount,omitempty"`
 	MatchHint  string `json:"matchHint,omitempty"`
@@ -46,7 +47,7 @@ func (a *App) SearchSessions(keyword string) ([]SessionInfo, error) {
 }
 
 func (a *App) listSessions(keyword string) ([]SessionInfo, error) {
-	dir := a.logDir()
+	dir := a.requestsDir()
 	_ = os.MkdirAll(dir, 0o755)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -70,18 +71,24 @@ func (a *App) listSessions(keyword string) ([]SessionInfo, error) {
 			continue
 		}
 		path := filepath.Join(dir, name)
+		day, fileHost := parseLogName(name)
 		si := SessionInfo{
 			Name:    name,
 			Path:    path,
 			Size:    info.Size(),
 			ModTime: info.ModTime().In(beijingLocation()).Format("2006-01-02 15:04:05"),
-			Day:     dayFromLogName(name),
+			Day:     day,
+			Host:    fileHost,
 		}
 		si.URL = peekSessionURL(path)
+		if h := urlHostname(si.URL); h != "" {
+			si.Host = h
+		}
 
 		if kw != "" {
 			nameHit := strings.Contains(strings.ToLower(si.Name), kw) ||
-				strings.Contains(strings.ToLower(si.Day), kw)
+				strings.Contains(strings.ToLower(si.Day), kw) ||
+				strings.Contains(strings.ToLower(si.Host), kw)
 			urlHit := strings.Contains(strings.ToLower(si.URL), kw)
 			count, hint := scanKeywordHits(path, kw)
 			si.MatchCount = count
@@ -93,7 +100,6 @@ func (a *App) listSessions(keyword string) ([]SessionInfo, error) {
 		list = append(list, si)
 	}
 	sort.Slice(list, func(i, j int) bool {
-		// daily files first by day desc, then legacy by modtime
 		di, dj := list[i].Day, list[j].Day
 		if di != "" && dj != "" && di != dj {
 			return di > dj
@@ -101,21 +107,38 @@ func (a *App) listSessions(keyword string) ([]SessionInfo, error) {
 		if kw != "" && list[i].MatchCount != list[j].MatchCount {
 			return list[i].MatchCount > list[j].MatchCount
 		}
+		hi, hj := list[i].Host, list[j].Host
+		if hi != hj {
+			return hi < hj
+		}
 		return list[i].ModTime > list[j].ModTime
 	})
 	return list, nil
 }
 
 func dayFromLogName(name string) string {
-	// ws-2006-01-02.jsonl
+	day, _ := parseLogName(name)
+	return day
+}
+
+// parseLogName understands ws-YYYY-MM-DD.jsonl and ws-YYYY-MM-DD-host.jsonl.
+func parseLogName(name string) (day, host string) {
 	base := strings.TrimSuffix(name, filepath.Ext(name))
-	if strings.HasPrefix(base, "ws-") && len(base) >= 13 {
-		day := strings.TrimPrefix(base, "ws-")
-		if _, err := time.ParseInLocation("2006-01-02", day, beijingLocation()); err == nil {
-			return day
-		}
+	if !strings.HasPrefix(base, "ws-") {
+		return "", ""
 	}
-	return ""
+	rest := strings.TrimPrefix(base, "ws-")
+	if len(rest) < 10 {
+		return "", ""
+	}
+	if _, err := time.ParseInLocation("2006-01-02", rest[:10], beijingLocation()); err != nil {
+		return "", ""
+	}
+	day = rest[:10]
+	if len(rest) > 11 && rest[10] == '-' {
+		host = rest[11:]
+	}
+	return day, host
 }
 
 // scanKeywordHits counts case-insensitive substring hits in a jsonl file.
@@ -178,7 +201,7 @@ func (a *App) LoadSession(name string) (*SessionDetail, error) {
 	if name == "" {
 		return nil, fmt.Errorf("name is required")
 	}
-	logDir, err := filepath.Abs(a.logDir())
+	logDir, err := filepath.Abs(a.requestsDir())
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +226,7 @@ func (a *App) PickAndLoadSession() (*SessionDetail, error) {
 			{DisplayName: "JSON Lines", Pattern: "*.jsonl"},
 			{DisplayName: "All Files", Pattern: "*.*"},
 		},
-		DefaultDirectory: a.logDir(),
+		DefaultDirectory: a.requestsDir(),
 	})
 	if err != nil {
 		return nil, err
@@ -216,7 +239,7 @@ func (a *App) PickAndLoadSession() (*SessionDetail, error) {
 
 // OpenLogDir reveals the log folder in Explorer.
 func (a *App) OpenLogDir() error {
-	dir := a.logDir()
+	dir := a.requestsDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -270,13 +293,15 @@ func loadSessionFile(path string) (*SessionDetail, error) {
 	}
 
 	name := filepath.Base(path)
+	day, host := parseLogName(name)
 	detail := &SessionDetail{
 		Info: SessionInfo{
 			Name:    name,
 			Path:    path,
 			Size:    st.Size(),
 			ModTime: st.ModTime().In(beijingLocation()).Format("2006-01-02 15:04:05"),
-			Day:     dayFromLogName(name),
+			Day:     day,
+			Host:    host,
 		},
 		Messages: make([]Msg, 0, 256),
 		Notes:    make([]string, 0),
@@ -301,6 +326,12 @@ func loadSessionFile(path string) (*SessionDetail, error) {
 			if u, ok := raw["url"].(string); ok {
 				detail.URL = u
 				detail.Info.URL = u
+				if h := urlHostname(u); h != "" {
+					detail.Info.Host = h
+				}
+			}
+			if h, ok := raw["host"].(string); ok && h != "" && detail.Info.Host == "" {
+				detail.Info.Host = h
 			}
 			if p, ok := raw["protocol"].(string); ok {
 				detail.Protocol = p
@@ -381,6 +412,22 @@ func loadSessionFile(path string) (*SessionDetail, error) {
 				m.Bytes = int(b)
 			} else {
 				m.Bytes = len(m.Text)
+			}
+			if raw["exchange"] != nil {
+				if b, err := json.Marshal(raw["exchange"]); err == nil {
+					var ex HTTPExchange
+					if json.Unmarshal(b, &ex) == nil {
+						m.Exchange = &ex
+					}
+				}
+			}
+			if raw["ws"] != nil {
+				if b, err := json.Marshal(raw["ws"]); err == nil {
+					var rec WSRecord
+					if json.Unmarshal(b, &rec) == nil {
+						m.WS = &rec
+					}
+				}
 			}
 			detail.Messages = append(detail.Messages, m)
 		default:

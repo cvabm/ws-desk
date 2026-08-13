@@ -3,6 +3,7 @@ export namespace main {
 	export class ConnectOptions {
 	    url: string;
 	    protocol: string;
+	    method?: string;
 	    headers: Record<string, string>;
 	    reconnect: boolean;
 	    pingSec: number;
@@ -15,9 +16,82 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.url = source["url"];
 	        this.protocol = source["protocol"];
+	        this.method = source["method"];
 	        this.headers = source["headers"];
 	        this.reconnect = source["reconnect"];
 	        this.pingSec = source["pingSec"];
+	    }
+	}
+	export class HTTPExchange {
+	    method: string;
+	    url: string;
+	    status: string;
+	    statusCode: number;
+	    timeMs: number;
+	    bytes: number;
+	    truncated: boolean;
+	    reqHeaders: Record<string, string>;
+	    resHeaders: Record<string, string>;
+	    reqBody: string;
+	    resBody: string;
+	    error?: string;
+	    manual?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new HTTPExchange(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.method = source["method"];
+	        this.url = source["url"];
+	        this.status = source["status"];
+	        this.statusCode = source["statusCode"];
+	        this.timeMs = source["timeMs"];
+	        this.bytes = source["bytes"];
+	        this.truncated = source["truncated"];
+	        this.reqHeaders = source["reqHeaders"];
+	        this.resHeaders = source["resHeaders"];
+	        this.reqBody = source["reqBody"];
+	        this.resBody = source["resBody"];
+	        this.error = source["error"];
+	        this.manual = source["manual"];
+	    }
+	}
+	export class HeaderItem {
+	    key: string;
+	    value: string;
+	    enabled: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new HeaderItem(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.value = source["value"];
+	        this.enabled = source["enabled"];
+	    }
+	}
+	export class WSRecord {
+	    url: string;
+	    protocol?: string;
+	    out: string;
+	    in: string;
+	    manual?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new WSRecord(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.url = source["url"];
+	        this.protocol = source["protocol"];
+	        this.out = source["out"];
+	        this.in = source["in"];
+	        this.manual = source["manual"];
 	    }
 	}
 	export class Msg {
@@ -27,6 +101,8 @@ export namespace main {
 	    text: string;
 	    pretty: string;
 	    bytes: number;
+	    exchange?: HTTPExchange;
+	    ws?: WSRecord;
 	
 	    static createFrom(source: any = {}) {
 	        return new Msg(source);
@@ -40,13 +116,40 @@ export namespace main {
 	        this.text = source["text"];
 	        this.pretty = source["pretty"];
 	        this.bytes = source["bytes"];
+	        this.exchange = this.convertValues(source["exchange"], HTTPExchange);
+	        this.ws = this.convertValues(source["ws"], WSRecord);
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class Profile {
 	    name: string;
 	    url: string;
 	    protocol: string;
+	    method?: string;
 	    headers: Record<string, string>;
+	    headerList?: HeaderItem[];
+	    authType?: string;
+	    authToken?: string;
+	    authUser?: string;
+	    authPass?: string;
+	    bodyType?: string;
 	    reconnect: boolean;
 	    pingSec: number;
 	
@@ -59,10 +162,35 @@ export namespace main {
 	        this.name = source["name"];
 	        this.url = source["url"];
 	        this.protocol = source["protocol"];
+	        this.method = source["method"];
 	        this.headers = source["headers"];
+	        this.headerList = this.convertValues(source["headerList"], HeaderItem);
+	        this.authType = source["authType"];
+	        this.authToken = source["authToken"];
+	        this.authUser = source["authUser"];
+	        this.authPass = source["authPass"];
+	        this.bodyType = source["bodyType"];
 	        this.reconnect = source["reconnect"];
 	        this.pingSec = source["pingSec"];
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class SessionInfo {
 	    name: string;
@@ -70,6 +198,7 @@ export namespace main {
 	    size: number;
 	    modTime: string;
 	    url?: string;
+	    host?: string;
 	    day?: string;
 	    matchCount?: number;
 	    matchHint?: string;
@@ -85,6 +214,7 @@ export namespace main {
 	        this.size = source["size"];
 	        this.modTime = source["modTime"];
 	        this.url = source["url"];
+	        this.host = source["host"];
 	        this.day = source["day"];
 	        this.matchCount = source["matchCount"];
 	        this.matchHint = source["matchHint"];
@@ -131,8 +261,10 @@ export namespace main {
 	
 	export class Status {
 	    state: string;
+	    kind: string;
 	    url: string;
 	    protocol: string;
+	    method?: string;
 	    session: string;
 	    msgCount: number;
 	    error?: string;
@@ -144,8 +276,10 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.state = source["state"];
+	        this.kind = source["kind"];
 	        this.url = source["url"];
 	        this.protocol = source["protocol"];
+	        this.method = source["method"];
 	        this.session = source["session"];
 	        this.msgCount = source["msgCount"];
 	        this.error = source["error"];

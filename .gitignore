@@ -1,5 +1,7 @@
 build/bin
 node_modules
 frontend/dist
+requests/
 ws-logs/
+servers/
 *.exe

@@ -1,15 +1,20 @@
-# ws-desk
+# ApiTester
 
-极简 Windows WebSocket 调试桌面端（Wails + Go）。
+极简 Windows WebSocket / HTTP 调试桌面端（Wails + Go）。
+
+产物：`ApiTester.exe`。
 
 ## 功能
 
-- 连接 / 断开，支持 subprotocol、自动重连、WebSocket ping
+- 支持 **ws / wss / http / https**
+- WebSocket：连接 / 断开、subprotocol、自动重连、ping；发送时未连接则自动连接
+- HTTP/HTTPS：无需连接；Params / Headers / Auth / Body，发送后看状态码、耗时、请求头、响应头和响应体（自签证书可连）
+- **手动记录**：HTTP 在「响应」页填写状态/头/体；WebSocket 在底部「发送 / 返回」各填一侧。点「记录」即可保存（不发网络请求），写入当天日志，可在历史里检索
 - 多行发送、JSON 格式化、重发上一条（`Ctrl+Enter` 发送）
 - 消息列表 + 详情；**默认浅色**，可一键切深色（本地记住）
-- Profile 下拉切换（默认 `imcp` / `gateway`）
-- 会话日志：**一天一个文件** `ws-logs/ws-YYYY-MM-DD.jsonl`（当天多次连接追加写入）
-- **历史**：按天浏览 / 关键字搜索 jsonl，可返回实时
+- URL 自己带协议（`ws://` / `wss://` / `http://` / `https://`）；Profile 按 **协议 + IP/域名** 分开保存，下拉切换
+- 会话日志：按 **日期 + IP/域名** 分文件 `requests/ws-YYYY-MM-DD-host.jsonl`
+- **历史**：按天和主机浏览 / 关键字搜索 jsonl，可返回实时
 
 ## 开发
 
@@ -26,13 +31,13 @@ wails dev
 ```bash
 cd ws-desk
 wails build
-# 产物: build/bin/ws-desk.exe
+# 产物: build/bin/ApiTester.exe
 ```
 
 运行时会在 exe 同目录（或项目目录）使用：
 
-- `profiles/` 连接配置
-- `ws-logs/` 会话日志
+- `servers/` 连接配置
+- `requests/` 会话日志
 
 ## 旧脚本
 
