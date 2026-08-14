@@ -53,8 +53,23 @@ const ALL_SCHEMES = new Set(['ws', 'wss', 'http', 'https']);
 const el = {
   app: $('app'),
   profile: $('profile'),
+  btnAddProfile: $('btnAddProfile'),
   btnDelProfile: $('btnDelProfile'),
+  urlBox: $('urlBox'),
+  urlPrefix: $('urlPrefix'),
   url: $('url'),
+  urlModal: $('urlModal'),
+  urlModalTitle: $('urlModalTitle'),
+  urlModalInput: $('urlModalInput'),
+  urlModalErr: $('urlModalErr'),
+  btnUrlModalClose: $('btnUrlModalClose'),
+  btnUrlModalCancel: $('btnUrlModalCancel'),
+  btnUrlModalOk: $('btnUrlModalOk'),
+  confirmModal: $('confirmModal'),
+  confirmTitle: $('confirmTitle'),
+  confirmMsg: $('confirmMsg'),
+  btnConfirmCancel: $('btnConfirmCancel'),
+  btnConfirmOk: $('btnConfirmOk'),
   protocol: $('protocol'),
   method: $('method'),
   reconnect: $('reconnect'),
@@ -165,6 +180,7 @@ let sending = false;
 let persistTimer = 0;
 let suppressSessionReset = false;
 let activeProfileName = '';
+let urlPrefix = '';
 
 function schedulePersist() {
   clearTimeout(persistTimer);
@@ -238,6 +254,8 @@ function setState(status) {
   }
   el.state.textContent = label;
   el.state.className = 'state ' + s;
+  const http = kind === 'http' || HTTP_SCHEMES.has(urlScheme(status?.url)) || isHTTPMode();
+  el.state.classList.toggle('hidden', http);
   el.btnToggle.textContent = s === 'open' || s === 'connecting' || s === 'reconnecting' ? '断开' : '连接';
   el.btnToggle.classList.toggle('on', s === 'open' || s === 'connecting' || s === 'reconnecting');
 }
@@ -324,8 +342,11 @@ function selectMsg(id) {
 
 function setHistoryMode(on, label = '') {
   historyMode = on;
+  el.app?.classList.toggle('history', on);
   el.histBanner.classList.toggle('hidden', !on);
   el.msgFilter.classList.toggle('hidden', !on);
+  el.reqPane?.classList.toggle('hidden', on || !isHTTPMode());
+  el.composer?.classList.toggle('hidden', on);
   el.listTitle.textContent = on
     ? '历史消息'
     : isHTTPMode()
@@ -391,7 +412,7 @@ function urlScheme(url) {
 }
 
 function currentScheme() {
-  const s = urlScheme(el.url?.value);
+  const s = urlScheme(currentURL());
   return ALL_SCHEMES.has(s) ? s : '';
 }
 
@@ -476,7 +497,8 @@ function applyTransportUI(scheme) {
       : '打开手动记录：保存一对发送/返回，不发送';
   }
   el.state?.classList.toggle('hidden', http);
-  el.reqPane?.classList.toggle('hidden', !http);
+  el.reqPane?.classList.toggle('hidden', historyMode || !http);
+  el.composer?.classList.toggle('hidden', historyMode);
   placePayload(http);
   if (el.detailTitle) el.detailTitle.textContent = http ? '响应' : '详情';
   if (el.listTitle && !historyMode) el.listTitle.textContent = http ? '记录' : '消息';
@@ -493,8 +515,95 @@ function applyTransportUI(scheme) {
   }
 }
 
+function originFromURL(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return '';
+  try {
+    const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `ws://${raw.replace(/^\/\//, '')}`;
+    const u = new URL(withScheme);
+    const scheme = (u.protocol || '').replace(/:$/, '').toLowerCase();
+    if (!ALL_SCHEMES.has(scheme) || !u.host) return '';
+    return `${scheme}://${u.host}`;
+  } catch {
+    return '';
+  }
+}
+
+function splitLockedURL(url, lockName) {
+  const raw = String(url || '').trim();
+  if (!raw) {
+    const name = String(lockName || '').trim();
+    return { prefix: name, rest: '' };
+  }
+  let prefix = originFromURL(raw);
+  if (!prefix) {
+    const name = String(lockName || el.profile?.value || profileNameFromURL(raw) || '').trim();
+    if (name && raw.slice(0, name.length).toLowerCase() === name.toLowerCase()) prefix = name;
+  }
+  if (!prefix) return { prefix: '', rest: raw };
+  let rest = raw;
+  if (rest.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase()) {
+    rest = rest.slice(prefix.length);
+  } else {
+    try {
+      const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `ws://${raw.replace(/^\/\//, '')}`;
+      const u = new URL(withScheme);
+      rest = `${u.pathname || ''}${u.search || ''}${u.hash || ''}`;
+    } catch {
+      rest = '';
+    }
+  }
+  if (rest === '/') rest = '';
+  return { prefix, rest };
+}
+
+function setURL(url, lockName) {
+  const { prefix, rest } = splitLockedURL(url, lockName);
+  urlPrefix = prefix;
+  if (el.urlPrefix) {
+    el.urlPrefix.textContent = prefix;
+    el.urlPrefix.title = prefix ? `${prefix}（前缀不可改，点 + 换地址）` : '';
+    el.urlPrefix.classList.toggle('hidden', !prefix);
+    el.urlPrefix.setAttribute('aria-hidden', prefix ? 'false' : 'true');
+  }
+  if (el.url) {
+    el.url.value = rest;
+    el.url.readOnly = !prefix;
+    el.url.placeholder = prefix ? '/path' : '点击 + 填写地址';
+  }
+}
+
 function currentURL() {
-  return (el.url?.value || '').trim();
+  const rest = (el.url?.value || '').trim();
+  if (!urlPrefix) return rest;
+  if (!rest) return urlPrefix;
+  if (rest.slice(0, urlPrefix.length).toLowerCase() === urlPrefix.toLowerCase()) return rest;
+  if (rest.startsWith('/') || rest.startsWith('?') || rest.startsWith('#')) return urlPrefix + rest;
+  return `${urlPrefix}/${rest.replace(/^\/+/, '')}`;
+}
+
+function normalizeURLPathInput() {
+  if (!urlPrefix || !el.url) return;
+  const raw = el.url.value;
+  const t = raw.trim();
+  if (!t) {
+    el.url.value = '';
+    return;
+  }
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t)) {
+    const origin = originFromURL(t);
+    if (origin && origin.toLowerCase() === urlPrefix.toLowerCase()) {
+      el.url.value = splitLockedURL(t).rest;
+      return;
+    }
+    try {
+      const u = new URL(t);
+      const path = `${u.pathname || ''}${u.search || ''}${u.hash || ''}`;
+      el.url.value = path === '/' ? '' : path;
+    } catch {
+      el.url.value = '';
+    }
+  }
 }
 
 function isHTTPURL(url) {
@@ -544,7 +653,7 @@ function onParamsChange() {
   if (!urlScheme(url)) return;
   syncingQuery = true;
   const next = applyQuery(url, paramRows);
-  if (next) el.url.value = next;
+  if (next) setURL(next);
   syncingQuery = false;
   schedulePersist();
 }
@@ -694,8 +803,31 @@ function hostFromURL(url) {
   }
 }
 
+function defaultPort(scheme) {
+  if (scheme === 'http' || scheme === 'ws') return '80';
+  if (scheme === 'https' || scheme === 'wss') return '443';
+  return '';
+}
+
+function hostPortFromURL(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return '';
+  try {
+    const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `ws://${raw.replace(/^\/\//, '')}`;
+    const u = new URL(withScheme);
+    const host = u.hostname || '';
+    if (!host) return '';
+    const port = u.port || '';
+    const scheme = (u.protocol || '').replace(/:$/, '').toLowerCase();
+    if (!port || port === defaultPort(scheme)) return host;
+    return u.host || `${host}:${port}`;
+  } catch {
+    return '';
+  }
+}
+
 function profileNameFromURL(url) {
-  const host = hostFromURL(url);
+  const host = hostPortFromURL(url);
   if (!host) return '';
   const s = urlScheme(url);
   return `${ALL_SCHEMES.has(s) ? s : 'ws'}://${host}`;
@@ -791,7 +923,7 @@ function selectProfileHost(url) {
 function applyHTTPExchange(ex) {
   if (!ex?.url) return false;
   const vars = currentVarMap();
-  el.url.value = keepTemplate(el.url.value, ex.url, vars);
+  setURL(keepTemplate(currentURL(), ex.url, vars));
   const method = (ex.method || 'GET').toUpperCase();
   if (el.method && [...el.method.options].some((o) => o.value === method)) {
     el.method.value = method;
@@ -840,7 +972,7 @@ function applyHTTPExchange(ex) {
   withoutSessionReset(() => applyTransportFromURL());
   syncParamsFromURL();
   renderRequestEditor();
-  selectProfileHost(el.url.value);
+  selectProfileHost(currentURL());
   setReqTab(String(ex.reqBody || '').trim() ? 'body' : 'params');
   persistProfile();
   return true;
@@ -853,7 +985,7 @@ function looksLikeVarRef(s) {
 function applyWSRecord(rec) {
   if (!rec) return false;
   const vars = currentVarMap();
-  if (rec.url) el.url.value = keepTemplate(el.url.value, rec.url, vars);
+  if (rec.url) setURL(keepTemplate(currentURL(), rec.url, vars));
   if (el.protocol) el.protocol.value = keepTemplate(el.protocol.value, rec.protocol || '', vars);
   if (el.payload) el.payload.value = keepTemplate(el.payload.value, rec.out || '', vars);
   recordDraft.in = keepTemplate(recordDraft.in, rec.in || '', vars);
@@ -868,7 +1000,7 @@ function applyWSRecord(rec) {
 function fillPlainMessage(m) {
   if (!m || (m.dir !== 'out' && m.dir !== 'in')) return false;
   const hint = parseHTTPOutPreview(m.text);
-  const url = historySessionURL || el.url.value;
+  const url = historySessionURL || currentURL();
   const sch = urlScheme(hint?.url || url || currentURL());
   if (hint) {
     return applyHTTPExchange({
@@ -882,7 +1014,7 @@ function fillPlainMessage(m) {
   }
   if (HTTP_SCHEMES.has(sch) || isHTTPMode()) {
     if (historySessionURL) {
-      el.url.value = historySessionURL;
+      setURL(historySessionURL);
       withoutSessionReset(() => applyTransportFromURL());
     }
     if (m.dir === 'out') {
@@ -898,7 +1030,7 @@ function fillPlainMessage(m) {
     return true;
   }
   if (historySessionURL) {
-    el.url.value = historySessionURL;
+    setURL(historySessionURL);
     const proto = historySessionProtocol;
     if (el.protocol && proto && proto !== 'ws' && proto !== 'wss' && !HTTP_SCHEMES.has(proto.toLowerCase())) {
       el.protocol.value = proto;
@@ -930,7 +1062,7 @@ function fillFromMessage(m) {
 /* —— profiles —— */
 async function applyProfile(p) {
   if (!p) return;
-  el.url.value = p.url || '';
+  setURL(p.url || p.name || '', p.name);
   el.protocol.value = p.protocol || '';
   const method = (p.method || 'GET').toUpperCase();
   if (el.method && [...el.method.options].some((o) => o.value === method)) {
@@ -971,7 +1103,7 @@ function renderProfileSelect(selected) {
 }
 
 function clearEditor() {
-  el.url.value = '';
+  setURL('');
   if (el.protocol) el.protocol.value = '';
   if (el.method) el.method.value = 'GET';
   el.reconnect.checked = true;
@@ -989,10 +1121,43 @@ function clearEditor() {
   renderRequestEditor();
 }
 
+let confirmResolver = null;
+
+function confirmModalOpen() {
+  return Boolean(el.confirmModal && !el.confirmModal.classList.contains('hidden'));
+}
+
+function closeConfirmModal(ok) {
+  if (!confirmModalOpen()) return;
+  el.confirmModal.classList.add('hidden');
+  el.confirmModal.setAttribute('aria-hidden', 'true');
+  const resolve = confirmResolver;
+  confirmResolver = null;
+  if (resolve) resolve(Boolean(ok));
+}
+
+function askConfirm({ title, message, okText }) {
+  closeConfirmModal(false);
+  if (el.confirmTitle) el.confirmTitle.textContent = title || '确认';
+  if (el.confirmMsg) el.confirmMsg.textContent = message || '';
+  if (el.btnConfirmOk) el.btnConfirmOk.textContent = okText || '确定';
+  el.confirmModal?.classList.remove('hidden');
+  el.confirmModal?.setAttribute('aria-hidden', 'false');
+  setTimeout(() => el.btnConfirmCancel?.focus(), 30);
+  return new Promise((resolve) => {
+    confirmResolver = resolve;
+  });
+}
+
 async function deleteCurrentProfile() {
   const name = el.profile?.value || profileNameFromURL(currentURL());
   if (!name) return;
-  if (!window.confirm(`删除地址 ${name} ？`)) return;
+  const ok = await askConfirm({
+    title: '删除地址',
+    message: `确定删除 ${name} ？此操作不可恢复。`,
+    okText: '删除',
+  });
+  if (!ok) return;
   clearTimeout(persistTimer);
   try {
     await DeleteProfile(name);
@@ -1009,6 +1174,7 @@ async function deleteCurrentProfile() {
   } else {
     renderProfileSelect('');
     clearEditor();
+    openUrlModal();
   }
 }
 
@@ -1018,7 +1184,82 @@ async function loadProfiles() {
   if (profiles.length) {
     const cur = profiles.find((p) => p.name === el.profile.value) || profiles[0];
     await applyProfile(cur);
+  } else {
+    clearEditor();
+    openUrlModal();
   }
+}
+
+function urlModalOpen() {
+  return Boolean(el.urlModal && !el.urlModal.classList.contains('hidden'));
+}
+
+function setUrlModalError(text) {
+  if (el.urlModalErr) el.urlModalErr.textContent = text || '';
+}
+
+function normalizeDialURL(raw) {
+  const t = String(raw || '').trim();
+  if (!t) return '';
+  if (urlScheme(t)) return t;
+  return `ws://${t.replace(/^\/\//, '')}`;
+}
+
+function validateNewURL(raw) {
+  const t = String(raw || '').trim();
+  if (!t) return '请输入 URL';
+  const scheme = urlScheme(t);
+  if (scheme && !ALL_SCHEMES.has(scheme)) return '仅支持 ws、wss、http、https';
+  const url = normalizeDialURL(t);
+  if (!hostFromURL(url) || !profileNameFromURL(url)) return '请输入有效的主机（IP 或域名）';
+  return '';
+}
+
+function openUrlModal() {
+  if (el.urlModalTitle) el.urlModalTitle.textContent = profiles.length ? '增加地址' : '输入地址';
+  if (el.urlModalInput) el.urlModalInput.value = '';
+  setUrlModalError('');
+  el.urlModal?.classList.remove('hidden');
+  el.urlModal?.setAttribute('aria-hidden', 'false');
+  setTimeout(() => el.urlModalInput?.focus(), 30);
+}
+
+function closeUrlModal() {
+  if (!urlModalOpen()) return;
+  el.urlModal.classList.add('hidden');
+  el.urlModal.setAttribute('aria-hidden', 'true');
+  setUrlModalError('');
+}
+
+async function submitUrlModal() {
+  const raw = el.urlModalInput?.value || '';
+  const err = validateNewURL(raw);
+  if (err) {
+    setUrlModalError(err);
+    el.urlModalInput?.focus();
+    return;
+  }
+  const url = normalizeDialURL(raw);
+  const name = profileNameFromURL(url);
+  const existing = name ? profiles.find((p) => p.name === name) : null;
+  closeUrlModal();
+  const prevName = profileNameFromURL(currentURL());
+  if (prevName && prevName !== name) {
+    await persistProfile(existing ? name : prevName);
+  }
+  if (existing) {
+    await applyProfile({ ...existing, url });
+    await persistProfile();
+    return;
+  }
+  clearTimeout(persistTimer);
+  clearEditor();
+  setURL(url, name);
+  applyTransportFromURL();
+  syncParamsFromURL();
+  renderRequestEditor();
+  await persistProfile();
+  await activateCurrent();
 }
 
 function currentHeaders() {
@@ -1083,8 +1324,15 @@ async function persistProfile(selectName) {
   } catch (_) {}
 }
 
+function requireURL() {
+  if (currentURL() && profileNameFromURL(currentURL())) return true;
+  openUrlModal();
+  return false;
+}
+
 async function toggleConn() {
   if (isHTTPMode()) return;
+  if (!requireURL()) return;
   await activateCurrent();
   const st = await GetStatus();
   if (st.state === 'open' || st.state === 'connecting' || st.state === 'reconnecting') {
@@ -1114,6 +1362,7 @@ async function ensureWSConnected() {
 
 async function sendMsg() {
   if (sending) return;
+  if (!requireURL()) return;
   await activateCurrent();
   const rawURL = currentURL();
   const http = isHTTPURL(rawURL);
@@ -1313,6 +1562,8 @@ function closeHistoryModal() {
 }
 
 function historyItemTitle(s) {
+  const named = profileNameFromURL(s?.url);
+  if (named) return [s?.day, named].filter(Boolean).join('  ·  ');
   const scheme = urlScheme(s?.url);
   const host = s?.host || hostFromURL(s?.url);
   const hostPart = host ? (scheme ? `${scheme}://${host}` : host) : '';
@@ -1400,6 +1651,24 @@ async function pickSession() {
 
 async function init() {
   initTheme();
+  el.btnAddProfile?.addEventListener('click', () => openUrlModal());
+  el.btnUrlModalClose?.addEventListener('click', closeUrlModal);
+  el.btnUrlModalCancel?.addEventListener('click', closeUrlModal);
+  el.btnUrlModalOk?.addEventListener('click', submitUrlModal);
+  el.urlModal?.addEventListener('click', (e) => {
+    if (e.target === el.urlModal) closeUrlModal();
+  });
+  el.urlModalInput?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      submitUrlModal();
+    }
+  });
+  el.btnConfirmCancel?.addEventListener('click', () => closeConfirmModal(false));
+  el.btnConfirmOk?.addEventListener('click', () => closeConfirmModal(true));
+  el.confirmModal?.addEventListener('click', (e) => {
+    if (e.target === el.confirmModal) closeConfirmModal(false);
+  });
   suppressSessionReset = true;
   try {
     applyTransportFromURL();
@@ -1529,8 +1798,16 @@ async function init() {
 
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
+    if (confirmModalOpen()) {
+      closeConfirmModal(false);
+      return;
+    }
     if (recordModalOpen()) {
       closeRecordModal();
+      return;
+    }
+    if (urlModalOpen()) {
+      closeUrlModal();
       return;
     }
     if (el.histModal && !el.histModal.classList.contains('hidden')) {
@@ -1538,22 +1815,18 @@ async function init() {
     }
   });
 
+  el.url.addEventListener('click', () => {
+    if (!urlPrefix) openUrlModal();
+  });
   el.url.addEventListener('change', async () => {
+    normalizeURLPathInput();
     applyTransportFromURL();
-    const url = currentURL();
-    const name = profileNameFromURL(url);
-    const existing = name ? profiles.find((x) => x.name === name) : null;
-    if (existing && el.profile.value !== name) {
-      await applyProfile({ ...existing, url });
-    } else {
-      syncParamsFromURL();
-      await activateCurrent();
-    }
+    syncParamsFromURL();
+    await activateCurrent();
     await persistProfile();
   });
   el.url.addEventListener('input', () => {
     if (syncingQuery) return;
-    applyTransportFromURL();
     if (isHTTPMode()) syncParamsFromURL();
   });
   el.protocol.addEventListener('change', persistProfile);

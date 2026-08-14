@@ -7,7 +7,7 @@ type HeaderItem struct {
 	Enabled bool   `json:"enabled"`
 }
 
-// Profile is a named connection preset (one per scheme://host).
+// Profile is a named connection preset (one per scheme://host[:port]).
 type Profile struct {
 	Name       string            `json:"name"`
 	URL        string            `json:"url"`

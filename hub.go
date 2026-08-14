@@ -6,7 +6,7 @@ import (
 	"sync"
 )
 
-// clientHub keeps one live session per profile (scheme://host).
+// clientHub keeps one live session per profile (scheme://host[:port]).
 type clientHub struct {
 	app    *App
 	mu     sync.Mutex

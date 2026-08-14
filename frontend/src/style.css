@@ -45,7 +45,7 @@ html[data-theme="light"] {
   --warn-text: #8a6a12;
   --radius: 8px;
   --font: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
-  --mono: "Cascadia Code", "Consolas", "Sarasa Mono SC", ui-monospace, monospace;
+  --mono: "Cascadia Mono", "Cascadia Code", "Consolas", "Sarasa Mono SC", ui-monospace, monospace;
 }
 
 html[data-theme="dark"] {
@@ -104,6 +104,8 @@ html, body {
   font-size: 13px;
   overflow: hidden;
   user-select: none;
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
 }
 
 .app {
@@ -118,32 +120,21 @@ html, body {
   flex: 0 0 48px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 12px;
+  flex-wrap: nowrap;
+  gap: 6px;
+  padding: 0 10px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
+  min-width: 0;
 }
 
-.brand {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  height: 28px;
-  margin-right: 4px;
-  color: var(--text);
-  font-weight: 700;
-  font-size: 13px;
-  letter-spacing: 0;
-  white-space: nowrap;
-  user-select: none;
+@media (max-width: 1100px) {
+  .url-prefix { max-width: 38%; }
 }
 
-.brand-icon {
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
-  display: block;
+.select, .input, .payload, .record-text, .res-body, .detail {
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
 }
 
 .select, .input {
@@ -165,16 +156,40 @@ html, body {
 
 .select.profile {
   width: auto;
-  min-width: 148px;
-  max-width: 260px;
-  flex-shrink: 0;
+  min-width: 120px;
+  max-width: 320px;
+  flex: 0 1 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-family: var(--mono);
   font-size: 12px;
 }
 
+.btn.ghost.btn-icon {
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-icon svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+.btn-add-profile,
 .btn-del-profile {
   flex-shrink: 0;
-  padding: 0 8px;
+}
+
+.btn-add-profile:hover:not(:disabled) {
+  color: var(--primary-text);
+  background: var(--primary-bg);
+  border-color: var(--primary-border);
 }
 
 .btn-del-profile:hover:not(:disabled) {
@@ -191,19 +206,69 @@ html, body {
   font-size: 12px;
 }
 
+.url-box {
+  flex: 1 1 160px;
+  min-width: 120px;
+  height: 30px;
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+.url-box:focus-within {
+  border-color: var(--accent-dim);
+}
+
+.url-prefix {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  max-width: 46%;
+  padding: 0 8px 0 10px;
+  border-right: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: text;
+  cursor: default;
+}
+
+.url-prefix.hidden { display: none; }
+
 .input.url {
   flex: 1;
-  min-width: 120px;
-  font-family: "Cascadia Mono", "Consolas", "Sarasa Mono SC", ui-monospace, monospace;
+  min-width: 48px;
+  height: 100%;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  font-family: var(--mono);
   font-size: 12px;
-  font-variant-ligatures: none;
-  font-feature-settings: "liga" 0, "calt" 0;
   color: var(--text);
   -webkit-text-fill-color: var(--text);
 }
 
+.input.url:focus {
+  border-color: transparent;
+}
+
+.input.url:read-only {
+  color: var(--muted);
+  -webkit-text-fill-color: var(--muted);
+  cursor: default;
+}
+
 .input.proto {
-  width: 120px;
+  width: 80px;
+  min-width: 64px;
+  flex: 0 1 80px;
   font-family: var(--mono);
   font-size: 12px;
 }
@@ -215,6 +280,7 @@ html, body {
   color: var(--muted);
   white-space: nowrap;
   font-size: 12px;
+  flex-shrink: 0;
 }
 
 .check input { accent-color: var(--accent); }
@@ -248,6 +314,16 @@ html, body {
   color: var(--danger-text);
 }
 
+.btn.danger {
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+  color: var(--danger-text);
+}
+
+.btn.danger:hover {
+  filter: brightness(0.97);
+}
+
 .btn.ghost {
   height: 26px;
   padding: 0 10px;
@@ -267,13 +343,16 @@ html, body {
   transform: none;
 }
 
+.bar > .btn {
+  flex-shrink: 0;
+}
+
 .bar-btn {
   height: 30px;
   flex-shrink: 0;
 }
 
 .state {
-  min-width: 92px;
   text-align: center;
   font-size: 11px;
   letter-spacing: 0.04em;
@@ -284,6 +363,7 @@ html, body {
   color: var(--muted);
   border: 1px solid var(--border);
   flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .state.open { color: var(--out); border-color: var(--open-border); background: var(--open-bg); }
@@ -338,9 +418,27 @@ html, body {
 
 .req-pane.hidden { display: none; }
 
-.app.http .list {
+.app.http:not(.history) .list {
   flex: 0.7 1 0;
   min-height: 96px;
+}
+
+/* 历史查看：只保留左列表 + 右详情，请求编辑区返回实时后再显示 */
+.app.history .req-pane,
+.app.history .composer {
+  display: none !important;
+  flex: 0 !important;
+  min-height: 0 !important;
+}
+
+.app.history .list-pane,
+.app.history .list {
+  flex: 1 1 0%;
+  min-height: 0;
+}
+
+.app.history #btnFill {
+  display: none;
 }
 
 .app.http .detail-pane .pane-head span { color: var(--text); }
@@ -916,6 +1014,44 @@ html, body {
 }
 
 .hist-empty.hidden { display: none; }
+
+.confirm-card {
+  width: min(400px, 100%);
+  max-height: none;
+}
+
+.confirm-body {
+  padding: 18px 16px 8px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.url-card {
+  width: min(480px, 100%);
+  max-height: none;
+}
+
+.url-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+}
+
+.url-modal-hint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.url-modal-input {
+  width: 100%;
+  height: 34px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
 
 .record-card {
   width: min(960px, 100%);

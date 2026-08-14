@@ -14,25 +14,64 @@ func (a *App) ensureServers() error {
 	return os.MkdirAll(a.serversDir(), 0o755)
 }
 
-// urlHostname is the request host (IP or domain), without port or scheme.
-func urlHostname(raw string) string {
+func parseDialishURL(raw string) *url.URL {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return ""
+		return nil
 	}
 	if !hasURLScheme(raw) {
 		raw = "ws://" + strings.TrimPrefix(raw, "//")
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
+		return nil
+	}
+	return u
+}
+
+func defaultPort(scheme string) string {
+	switch strings.ToLower(scheme) {
+	case "http", "ws":
+		return "80"
+	case "https", "wss":
+		return "443"
+	default:
+		return ""
+	}
+}
+
+// urlHostname is the request host (IP or domain), without port or scheme.
+func urlHostname(raw string) string {
+	u := parseDialishURL(raw)
+	if u == nil {
 		return ""
 	}
 	return strings.TrimSpace(u.Hostname())
 }
 
-// profileNameFromURL is "scheme://host" (no port). Missing scheme defaults to ws.
+// urlHostPort is host[:port], omitting the scheme's default port.
+func urlHostPort(raw string) string {
+	u := parseDialishURL(raw)
+	if u == nil {
+		return ""
+	}
+	host := strings.TrimSpace(u.Hostname())
+	if host == "" {
+		return ""
+	}
+	port := u.Port()
+	if port == "" || port == defaultPort(u.Scheme) {
+		return host
+	}
+	if strings.Contains(host, ":") {
+		return "[" + host + "]:" + port
+	}
+	return host + ":" + port
+}
+
+// profileNameFromURL is "scheme://host[:port]". Missing scheme defaults to ws.
 func profileNameFromURL(raw string) string {
-	host := urlHostname(raw)
+	host := urlHostPort(raw)
 	if host == "" {
 		return ""
 	}
@@ -107,7 +146,7 @@ func (a *App) loadProfiles() ([]Profile, error) {
 	return list, nil
 }
 
-// migrateLegacyNamedProfiles rewrites old named or host-only presets to scheme://host files.
+// migrateLegacyNamedProfiles rewrites old named or host-only presets to scheme://host[:port] files.
 func (a *App) migrateLegacyNamedProfiles() error {
 	dir := a.serversDir()
 	entries, err := os.ReadDir(dir)

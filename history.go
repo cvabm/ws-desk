@@ -81,7 +81,7 @@ func (a *App) listSessions(keyword string) ([]SessionInfo, error) {
 			Host:    fileHost,
 		}
 		si.URL = peekSessionURL(path)
-		if h := urlHostname(si.URL); h != "" {
+		if h := urlHostPort(si.URL); h != "" {
 			si.Host = h
 		}
 
@@ -326,7 +326,7 @@ func loadSessionFile(path string) (*SessionDetail, error) {
 			if u, ok := raw["url"].(string); ok {
 				detail.URL = u
 				detail.Info.URL = u
-				if h := urlHostname(u); h != "" {
+				if h := urlHostPort(u); h != "" {
 					detail.Info.Host = h
 				}
 			}

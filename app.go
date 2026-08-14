@@ -78,7 +78,7 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 }
 
-// GetProfiles returns saved connection profiles (one per scheme + host).
+// GetProfiles returns saved connection profiles (one per scheme + host[:port]).
 func (a *App) GetProfiles() []Profile {
 	list, err := a.loadProfiles()
 	if err != nil {
@@ -87,7 +87,7 @@ func (a *App) GetProfiles() []Profile {
 	return list
 }
 
-// SaveProfile writes a profile keyed by scheme://host (IP or domain).
+// SaveProfile writes a profile keyed by scheme://host[:port].
 func (a *App) SaveProfile(p Profile) error {
 	if p.URL == "" {
 		return fmt.Errorf("url is required")
@@ -101,7 +101,7 @@ func (a *App) SaveProfile(p Profile) error {
 	return a.saveProfileFile(p)
 }
 
-// DeleteProfile removes the saved preset for a scheme://host (or raw URL).
+// DeleteProfile removes the saved preset for a scheme://host[:port] (or raw URL).
 func (a *App) DeleteProfile(name string) error {
 	if err := a.deleteProfile(name); err != nil {
 		return err
