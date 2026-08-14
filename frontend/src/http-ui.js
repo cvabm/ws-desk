@@ -186,6 +186,100 @@ export function editorHeadersFromRequest(headers, opts = {}) {
   return rows;
 }
 
+export function normalizeVarName(name) {
+  const raw = String(name || '').trim();
+  if (!raw) return '';
+  const wrapped = raw.match(/^\{\{\s*([^{}]+?)\s*\}\}$/);
+  return (wrapped ? wrapped[1] : raw).trim();
+}
+
+export function varsFromRows(rows) {
+  const out = {};
+  for (const r of rows || []) {
+    if (r.enabled === false) continue;
+    const k = normalizeVarName(r.key);
+    if (!k) continue;
+    out[k] = r.value ?? '';
+  }
+  return out;
+}
+
+function lookupVar(vars, name) {
+  if (!vars || !name) return undefined;
+  if (Object.prototype.hasOwnProperty.call(vars, name)) return vars[name];
+  const lower = name.toLowerCase();
+  for (const [k, v] of Object.entries(vars)) {
+    if (k.toLowerCase() === lower) return v;
+  }
+  return undefined;
+}
+
+export function expandVars(text, vars, rounds = 5) {
+  let s = String(text ?? '');
+  if (!s || !vars || !Object.keys(vars).length) return s;
+  for (let i = 0; i < rounds; i++) {
+    let changed = false;
+    const re = /\{\{\s*([^{}\s]+)\s*\}\}|%7B%7B\s*([^{}\s]+)\s*%7D%7D/g;
+    s = s.replace(re, (m, a, b) => {
+      const val = lookupVar(vars, a || b);
+      if (val === undefined || val === '') return m;
+      changed = true;
+      return String(val);
+    });
+    if (!changed) break;
+  }
+  return s;
+}
+
+export function expandMap(map, vars) {
+  const out = {};
+  for (const [k, v] of Object.entries(map || {})) {
+    out[expandVars(k, vars)] = expandVars(String(v ?? ''), vars);
+  }
+  return out;
+}
+
+export function keepTemplate(current, incoming, vars) {
+  const cur = String(current ?? '');
+  const inc = String(incoming ?? '');
+  if (cur === inc) return cur;
+  if (cur.includes('{{') && expandVars(cur, vars) === inc) return cur;
+  return inc;
+}
+
+export function wrapIfVarValue(text, vars) {
+  const s = String(text ?? '');
+  if (!s || s.includes('{{')) return s;
+  let bestName = '';
+  let bestLen = 0;
+  for (const [name, val] of Object.entries(vars || {})) {
+    const v = String(val ?? '');
+    if (v && s === v && v.length >= bestLen) {
+      bestLen = v.length;
+      bestName = name;
+    }
+  }
+  return bestName ? `{{${bestName}}}` : s;
+}
+
+export function keepTemplatesInRows(currentRows, previousRows, vars) {
+  const prev = previousRows || [];
+  return (currentRows || []).map((row) => {
+    const match = prev.find((p) => {
+      if (!p?.key) return false;
+      return p.key === row.key
+        || expandVars(p.key, vars) === row.key
+        || expandVars(p.key, vars) === expandVars(row.key, vars);
+    });
+    const key = match ? keepTemplate(match.key, row.key, vars) : row.key;
+    const value = wrapIfVarValue(
+      match ? keepTemplate(match.value, row.value, vars) : row.value,
+      vars,
+    );
+    return { key, value, enabled: row.enabled !== false };
+  });
+}
+
 export function parseHTTPOutPreview(text) {
   const m = String(text || '').trim().match(
     /^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+(\S+)$/i,
@@ -194,45 +288,59 @@ export function parseHTTPOutPreview(text) {
   return { method: m[1].toUpperCase(), url: m[2] };
 }
 
+function bindKVRow(root, rows, i, onChange) {
+  const row = rows[i] || emptyRow();
+  const line = document.createElement('div');
+  line.className = 'kv-row';
+  line.innerHTML = `
+    <input type="checkbox" class="kv-on" ${row.enabled ? 'checked' : ''} title="启用"/>
+    <input class="input kv-key" spellcheck="false" placeholder="Key"/>
+    <input class="input kv-val" spellcheck="false" placeholder="Value"/>
+    <button type="button" class="btn ghost kv-del" title="删除">×</button>
+  `;
+  const keyInput = line.querySelector('.kv-key');
+  const valInput = line.querySelector('.kv-val');
+  keyInput.value = row.key;
+  valInput.value = row.value;
+  line.querySelector('.kv-on').addEventListener('change', (e) => {
+    rows[i].enabled = e.target.checked;
+    onChange?.();
+  });
+  const onKeyEdit = (e) => {
+    rows[i].key = keyInput.value;
+    if (!e.isComposing && i === rows.length - 1 && keyInput.value) {
+      rows.push(emptyRow());
+      bindKVRow(root, rows, rows.length - 1, onChange);
+    }
+    onChange?.();
+  };
+  keyInput.addEventListener('input', onKeyEdit);
+  keyInput.addEventListener('compositionend', () => {
+    rows[i].key = keyInput.value;
+    if (i === rows.length - 1 && keyInput.value) {
+      rows.push(emptyRow());
+      bindKVRow(root, rows, rows.length - 1, onChange);
+    }
+    onChange?.();
+  });
+  valInput.addEventListener('input', () => {
+    rows[i].value = valInput.value;
+    onChange?.();
+  });
+  line.querySelector('.kv-del').addEventListener('click', () => {
+    if (rows.length === 1) {
+      rows[0] = emptyRow();
+    } else {
+      rows.splice(i, 1);
+    }
+    renderKV(root, rows, onChange);
+    onChange?.();
+  });
+  root.appendChild(line);
+}
+
 export function renderKV(root, rows, onChange) {
   if (!root) return;
   root.innerHTML = '';
-  rows.forEach((row, i) => {
-    const line = document.createElement('div');
-    line.className = 'kv-row';
-    line.innerHTML = `
-      <input type="checkbox" class="kv-on" ${row.enabled ? 'checked' : ''} title="启用"/>
-      <input class="input kv-key" spellcheck="false" placeholder="Key"/>
-      <input class="input kv-val" spellcheck="false" placeholder="Value"/>
-      <button type="button" class="btn ghost kv-del" title="删除">×</button>
-    `;
-    line.querySelector('.kv-key').value = row.key;
-    line.querySelector('.kv-val').value = row.value;
-    line.querySelector('.kv-on').addEventListener('change', (e) => {
-      rows[i].enabled = e.target.checked;
-      onChange?.();
-    });
-    line.querySelector('.kv-key').addEventListener('input', (e) => {
-      rows[i].key = e.target.value;
-      if (i === rows.length - 1 && e.target.value) {
-        rows.push(emptyRow());
-        renderKV(root, rows, onChange);
-      }
-      onChange?.();
-    });
-    line.querySelector('.kv-val').addEventListener('input', (e) => {
-      rows[i].value = e.target.value;
-      onChange?.();
-    });
-    line.querySelector('.kv-del').addEventListener('click', () => {
-      if (rows.length === 1) {
-        rows[0] = emptyRow();
-      } else {
-        rows.splice(i, 1);
-      }
-      renderKV(root, rows, onChange);
-      onChange?.();
-    });
-    root.appendChild(line);
-  });
+  rows.forEach((_, i) => bindKVRow(root, rows, i, onChange));
 }

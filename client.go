@@ -17,7 +17,8 @@ import (
 const maxMessages = 5000
 
 type wsClient struct {
-	app *App
+	app     *App
+	profile string
 
 	mu       sync.Mutex
 	conn     *websocket.Conn
@@ -51,6 +52,7 @@ func (c *wsClient) Status() Status {
 		Session:  c.session,
 		MsgCount: len(c.msgs),
 		Error:    c.errMsg,
+		Profile:  c.profile,
 	}
 }
 
@@ -243,7 +245,6 @@ func (c *wsClient) RecordHTTP(ex HTTPExchange) (*HTTPExchange, error) {
 
 	ptr := &ex
 	c.pushEx("out", formatHTTPOut(ex.Method, ex.URL, ex.ReqBody), ptr)
-	c.push("sys", fmt.Sprintf("recorded  http %s  %db", ex.Status, ex.Bytes))
 	c.pushEx("in", formatHTTPIn(ex.Status, ex.ResBody, false), ptr)
 	return ptr, nil
 }
@@ -318,14 +319,9 @@ func (c *wsClient) beginWSRecord(opts ConnectOptions) error {
 
 func (c *wsClient) beginHTTP(opts ConnectOptions, needDoer bool) (*http.Client, error) {
 	c.mu.Lock()
-	needDrop := c.conn != nil || c.wantOpen.Load()
-	c.mu.Unlock()
-	if needDrop {
-		c.Disconnect()
-	}
-
-	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	live := c.conn != nil || c.wantOpen.Load()
 	var doer *http.Client
 	if needDoer {
 		if c.httpDoer == nil {
@@ -334,7 +330,7 @@ func (c *wsClient) beginHTTP(opts ConnectOptions, needDoer bool) (*http.Client, 
 		doer = c.httpDoer
 	}
 	host := urlHostname(opts.URL)
-	if c.logger != nil && c.logger.Host() != host {
+	if c.logger != nil && c.logger.Host() != host && !live {
 		c.logger.Close()
 		c.logger = nil
 		c.session = ""
@@ -347,10 +343,12 @@ func (c *wsClient) beginHTTP(opts ConnectOptions, needDoer bool) (*http.Client, 
 		c.logger = logger
 		c.session = logger.SessionID()
 	}
-	c.opts = opts
-	c.kind = kindHTTP
-	c.state = "idle"
-	c.errMsg = ""
+	if !live {
+		c.opts = opts
+		c.kind = kindHTTP
+		c.state = "idle"
+		c.errMsg = ""
+	}
 	return doer, nil
 }
 
@@ -409,11 +407,6 @@ func (c *wsClient) doHTTP(opts ConnectOptions, doer *http.Client, body string) (
 		c.push("sys", fmt.Sprintf("http %s  %dms  read error: %s", resp.Status, ex.TimeMs, err.Error()))
 		return ex, err
 	}
-	note := fmt.Sprintf("http %s  %dms  %db", resp.Status, ex.TimeMs, n)
-	if truncated {
-		note += "  truncated"
-	}
-	c.push("sys", note)
 	c.pushEx("in", formatHTTPIn(resp.Status, text, truncated), ex)
 	return ex, nil
 }
@@ -640,6 +633,9 @@ func (c *wsClient) pushEx(dir, text string, ex *HTTPExchange) {
 }
 
 func (c *wsClient) emitMsg(m Msg) {
+	if m.Profile == "" {
+		m.Profile = c.profile
+	}
 	c.mu.Lock()
 	c.msgs = append(c.msgs, m)
 	if len(c.msgs) > maxMessages {

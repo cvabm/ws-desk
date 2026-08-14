@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -141,6 +142,35 @@ func (a *App) migrateLegacyNamedProfiles() error {
 		if !strings.EqualFold(e.Name(), want) {
 			_ = os.Remove(path)
 		}
+	}
+	return nil
+}
+
+func (a *App) deleteProfile(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("name is required")
+	}
+	if n := profileNameFromURL(name); n != "" {
+		name = n
+	}
+	dir, err := filepath.Abs(a.serversDir())
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	path, err := filepath.Abs(filepath.Join(dir, profileFileName(name)))
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(dir, path)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return fmt.Errorf("invalid profile")
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
 	}
 	return nil
 }

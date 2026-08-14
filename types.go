@@ -19,9 +19,12 @@ type Profile struct {
 	AuthToken  string            `json:"authToken,omitempty"`
 	AuthUser   string            `json:"authUser,omitempty"`
 	AuthPass   string            `json:"authPass,omitempty"`
-	BodyType   string            `json:"bodyType,omitempty"`
-	Reconnect  bool              `json:"reconnect"`
-	PingSec    int               `json:"pingSec"`
+	BodyType     string            `json:"bodyType,omitempty"`
+	Body         string            `json:"body,omitempty"`
+	FormList     []HeaderItem      `json:"formList,omitempty"`
+	VariableList []HeaderItem      `json:"variableList,omitempty"`
+	Reconnect    bool              `json:"reconnect"`
+	PingSec      int               `json:"pingSec"`
 }
 
 // ConnectOptions is used by the UI to open a connection.
@@ -44,6 +47,7 @@ type Msg struct {
 	Bytes    int           `json:"bytes"`
 	Exchange *HTTPExchange `json:"exchange,omitempty"`
 	WS       *WSRecord     `json:"ws,omitempty"`
+	Profile  string        `json:"profile,omitempty"`
 }
 
 // WSRecord is a manually saved WebSocket send/receive pair.
@@ -82,4 +86,5 @@ type Status struct {
 	Session  string `json:"session"`
 	MsgCount int    `json:"msgCount"`
 	Error    string `json:"error,omitempty"`
+	Profile  string `json:"profile,omitempty"`
 }

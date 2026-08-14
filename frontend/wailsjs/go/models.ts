@@ -103,6 +103,7 @@ export namespace main {
 	    bytes: number;
 	    exchange?: HTTPExchange;
 	    ws?: WSRecord;
+	    profile?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Msg(source);
@@ -118,6 +119,7 @@ export namespace main {
 	        this.bytes = source["bytes"];
 	        this.exchange = this.convertValues(source["exchange"], HTTPExchange);
 	        this.ws = this.convertValues(source["ws"], WSRecord);
+	        this.profile = source["profile"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -150,6 +152,9 @@ export namespace main {
 	    authUser?: string;
 	    authPass?: string;
 	    bodyType?: string;
+	    body?: string;
+	    formList?: HeaderItem[];
+	    variableList?: HeaderItem[];
 	    reconnect: boolean;
 	    pingSec: number;
 	
@@ -170,6 +175,9 @@ export namespace main {
 	        this.authUser = source["authUser"];
 	        this.authPass = source["authPass"];
 	        this.bodyType = source["bodyType"];
+	        this.body = source["body"];
+	        this.formList = this.convertValues(source["formList"], HeaderItem);
+	        this.variableList = this.convertValues(source["variableList"], HeaderItem);
 	        this.reconnect = source["reconnect"];
 	        this.pingSec = source["pingSec"];
 	    }
@@ -268,6 +276,7 @@ export namespace main {
 	    session: string;
 	    msgCount: number;
 	    error?: string;
+	    profile?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Status(source);
@@ -283,6 +292,7 @@ export namespace main {
 	        this.session = source["session"];
 	        this.msgCount = source["msgCount"];
 	        this.error = source["error"];
+	        this.profile = source["profile"];
 	    }
 	}
 

@@ -15,6 +15,7 @@
         <span>ApiTester</span>
       </div>
       <select id="profile" class="select profile" title="按协议 + IP / 域名"></select>
+      <button id="btnDelProfile" class="btn ghost bar-btn btn-del-profile" type="button" title="删除当前地址" disabled>删除</button>
       <input id="url" class="input url" type="text" spellcheck="false" placeholder="ws://host:port/path  或  https://host/path"/>
       <input id="protocol" class="input proto" type="text" spellcheck="false" placeholder="subprotocol"/>
       <select id="method" class="select method hidden" title="HTTP 方法">
@@ -29,7 +30,7 @@
       <label id="reconnectWrap" class="check"><input id="reconnect" type="checkbox" checked/> 重连</label>
       <button id="btnToggle" class="btn primary" type="button">连接</button>
       <button id="btnSendTop" class="btn primary hidden" type="button">发送</button>
-      <button id="btnRecord" class="btn ghost" type="button" title="不发送，只保存当前发送和返回">记录</button>
+      <button id="btnRecord" class="btn ghost" type="button" title="打开手动记录，不发送">记录</button>
       <div id="state" class="state idle">idle</div>
       <button id="btnHistory" class="btn ghost bar-btn" type="button" title="历史会话">历史</button>
       <button id="btnTheme" class="btn ghost bar-btn" type="button" title="切换主题">深色</button>
@@ -57,7 +58,7 @@
               <button type="button" class="req-tab" data-tab="headers">请求头</button>
               <button type="button" class="req-tab" data-tab="auth">鉴权</button>
               <button type="button" class="req-tab on" data-tab="body">请求体</button>
-              <button type="button" class="req-tab" data-tab="response">响应</button>
+              <button type="button" class="req-tab" data-tab="vars">变量</button>
             </div>
             <div id="tabParams" class="req-panel hidden">
               <div id="paramRows" class="kv-list"></div>
@@ -86,19 +87,9 @@
               </div>
               <div id="formRows" class="kv-list hidden"></div>
             </div>
-            <div id="tabResponse" class="req-panel hidden">
-              <div class="resp-edit-row">
-                <span class="resp-edit-label">状态</span>
-                <input id="resStatusCode" class="input status-code" type="text" spellcheck="false" inputmode="numeric" placeholder="200" value="200"/>
-                <input id="resStatusText" class="input status-text" type="text" spellcheck="false" placeholder="OK" value="OK"/>
-              </div>
-              <div class="resp-edit-label">响应头</div>
-              <div id="resHeaderRows" class="kv-list res-hdr-list"></div>
-              <div class="resp-edit-head">
-                <span class="resp-edit-label">响应体</span>
-                <button id="btnFormatRes" class="btn ghost" type="button">格式化</button>
-              </div>
-              <textarea id="resBody" class="res-body" spellcheck="false" placeholder='{"ok":true}  ·  Ctrl+Enter 记录'></textarea>
+            <div id="tabVars" class="req-panel hidden">
+              <div class="vars-hint">名字写 Token，值写实际内容；在请求头等处用 {{Token}}，发送时替换</div>
+              <div id="varRows" class="kv-list"></div>
             </div>
           </div>
         </div>
@@ -124,10 +115,7 @@
 
     <!-- composer -->
     <footer class="composer">
-      <div id="capOut" class="composer-cap cap-out">发送</div>
       <textarea id="payload" class="payload" spellcheck="false" placeholder='{"cmd":"ping"}  ·  Ctrl+Enter 发送'></textarea>
-      <div id="capIn" class="composer-cap cap-in">返回</div>
-      <textarea id="payloadIn" class="payload-in" spellcheck="false" placeholder='{"ok":true}  ·  Ctrl+Enter 记录'></textarea>
       <div class="composer-actions">
         <button id="btnFormat" class="btn ghost" type="button">格式化</button>
         <button id="btnResend" class="btn ghost" type="button">重发</button>
@@ -155,6 +143,57 @@
       </div>
       <div id="histList" class="hist-list"></div>
       <div id="histEmpty" class="hist-empty hidden">暂无按天日志（ws-YYYY-MM-DD.jsonl），发送、记录或连接后会自动生成</div>
+    </div>
+  </div>
+
+  <!-- manual record modal -->
+  <div id="recordModal" class="modal hidden" aria-hidden="true">
+    <div class="modal-card record-card">
+      <div class="modal-head">
+        <span id="recordTitle">手动记录</span>
+        <div class="pane-actions">
+          <button id="btnRecordClose" class="btn ghost" type="button">关闭</button>
+        </div>
+      </div>
+      <div id="recordHint" class="record-hint">不会发送，只保存到记录列表和当天日志。</div>
+      <div id="recordMeta" class="record-meta"></div>
+      <div id="recordWS" class="record-body record-ws">
+        <div class="record-col">
+          <div class="record-col-head">
+            <span>发送</span>
+            <button id="btnFmtRecOut" class="btn ghost" type="button">格式化</button>
+          </div>
+          <textarea id="recOut" class="record-text" spellcheck="false" placeholder='{"cmd":"ping"}'></textarea>
+        </div>
+        <div class="record-col">
+          <div class="record-col-head">
+            <span>返回</span>
+            <button id="btnFmtRecIn" class="btn ghost" type="button">格式化</button>
+          </div>
+          <textarea id="recIn" class="record-text" spellcheck="false" placeholder='{"ok":true}'></textarea>
+        </div>
+      </div>
+      <div id="recordHTTP" class="record-body record-http hidden">
+        <div class="record-col">
+          <div class="record-col-head">
+            <span>请求体</span>
+            <button id="btnFmtRecReq" class="btn ghost" type="button">格式化</button>
+          </div>
+          <textarea id="recReqBody" class="record-text" spellcheck="false" placeholder='{"name":"demo"}'></textarea>
+        </div>
+        <div class="record-col">
+          <div class="record-col-head">
+            <span>响应体</span>
+            <button id="btnFmtRecRes" class="btn ghost" type="button">格式化</button>
+          </div>
+          <textarea id="recResBody" class="record-text" spellcheck="false" placeholder='{"ok":true}'></textarea>
+        </div>
+      </div>
+      <div class="record-foot">
+        <div id="recordErr" class="record-err"></div>
+        <button id="btnRecordCancel" class="btn ghost" type="button">取消</button>
+        <button id="btnRecordSave" class="btn primary" type="button">保存记录</button>
+      </div>
     </div>
   </div>
 

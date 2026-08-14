@@ -129,6 +129,60 @@ func TestMigrateHostOnlyProfiles(t *testing.T) {
 	}
 }
 
+func TestDeleteProfile(t *testing.T) {
+	a := &App{baseDir: t.TempDir()}
+	if err := a.SaveProfile(Profile{URL: "ws://192.0.2.11:10020/imcp"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SaveProfile(Profile{URL: "http://203.0.113.19/"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.DeleteProfile("http://203.0.113.19/path"); err != nil {
+		t.Fatal(err)
+	}
+	list := a.GetProfiles()
+	if len(list) != 1 || list[0].Name != "ws://192.0.2.11" {
+		t.Fatalf("after delete=%+v", list)
+	}
+	if _, err := os.Stat(filepath.Join(a.serversDir(), "http-203.0.113.19.json")); !os.IsNotExist(err) {
+		t.Fatalf("http profile file should be gone, err=%v", err)
+	}
+	if err := a.DeleteProfile("ws://192.0.2.11"); err != nil {
+		t.Fatal(err)
+	}
+	if list := a.GetProfiles(); len(list) != 0 {
+		t.Fatalf("want empty, got %+v", list)
+	}
+	if err := a.DeleteProfile("ws://missing.example"); err != nil {
+		t.Fatalf("missing should be ok: %v", err)
+	}
+	if err := a.DeleteProfile(""); err == nil {
+		t.Fatal("empty name should fail")
+	}
+}
+
+func TestSaveProfileKeepsLastBody(t *testing.T) {
+	a := &App{baseDir: t.TempDir()}
+	err := a.SaveProfile(Profile{
+		URL:      "https://httpbin.org/post",
+		Method:   "POST",
+		BodyType: "json",
+		Body:     `{"ping":1}`,
+		FormList: []HeaderItem{{Key: "a", Value: "1", Enabled: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := a.GetProfiles()
+	if len(list) != 1 {
+		t.Fatalf("profiles=%+v", list)
+	}
+	p := list[0]
+	if p.Body != `{"ping":1}` || p.BodyType != "json" || len(p.FormList) != 1 || p.FormList[0].Key != "a" {
+		t.Fatalf("profile=%+v", p)
+	}
+}
+
 func TestGetProfilesEmpty(t *testing.T) {
 	a := &App{baseDir: t.TempDir()}
 	if list := a.GetProfiles(); len(list) != 0 {

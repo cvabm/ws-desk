@@ -11,14 +11,14 @@ import (
 type App struct {
 	ctx     context.Context
 	baseDir string
-	client  *wsClient
+	hub     *clientHub
 }
 
 // NewApp creates a new App application struct.
 func NewApp() *App {
 	base := resolveBaseDir()
 	a := &App{baseDir: base}
-	a.client = newWSClient(a)
+	a.hub = newClientHub(a)
 	return a
 }
 
@@ -73,8 +73,8 @@ func (a *App) startup(ctx context.Context) {
 }
 
 func (a *App) shutdown(ctx context.Context) {
-	if a.client != nil {
-		a.client.Disconnect()
+	if a.hub != nil {
+		a.hub.DisconnectAll()
 	}
 }
 
@@ -101,49 +101,67 @@ func (a *App) SaveProfile(p Profile) error {
 	return a.saveProfileFile(p)
 }
 
-// Connect opens a WebSocket.
-func (a *App) Connect(opts ConnectOptions) error {
-	return a.client.Connect(opts)
+// DeleteProfile removes the saved preset for a scheme://host (or raw URL).
+func (a *App) DeleteProfile(name string) error {
+	if err := a.deleteProfile(name); err != nil {
+		return err
+	}
+	if a.hub != nil {
+		a.hub.Remove(name)
+	}
+	return nil
 }
 
-// Disconnect closes the active connection.
+// SelectProfile makes this profile the active live session.
+func (a *App) SelectProfile(name string) {
+	if a.hub != nil {
+		a.hub.Select(name)
+	}
+}
+
+// Connect opens a WebSocket.
+func (a *App) Connect(opts ConnectOptions) error {
+	return a.hub.Connect(opts)
+}
+
+// Disconnect closes the active profile's connection.
 func (a *App) Disconnect() {
-	a.client.Disconnect()
+	a.hub.Disconnect()
 }
 
 // Send transmits a WebSocket text frame.
 func (a *App) Send(text string) error {
-	return a.client.Send(text)
+	return a.hub.Send(text)
 }
 
 // RequestHTTP sends a one-shot HTTP/HTTPS request. No persistent connection.
 func (a *App) RequestHTTP(opts ConnectOptions, body string) (*HTTPExchange, error) {
-	return a.client.RequestHTTP(opts, body)
+	return a.hub.RequestHTTP(opts, body)
 }
 
 // RecordHTTP saves a request/response pair without sending it.
 func (a *App) RecordHTTP(ex HTTPExchange) (*HTTPExchange, error) {
-	return a.client.RecordHTTP(ex)
+	return a.hub.RecordHTTP(ex)
 }
 
 // RecordWS saves a WebSocket send/receive pair without transmitting.
 func (a *App) RecordWS(opts ConnectOptions, outText, inText string) (*WSRecord, error) {
-	return a.client.RecordWS(opts, outText, inText)
+	return a.hub.RecordWS(opts, outText, inText)
 }
 
 // GetStatus returns the current connection status.
 func (a *App) GetStatus() Status {
-	return a.client.Status()
+	return a.hub.Status()
 }
 
 // GetMessages returns messages after a given id.
 func (a *App) GetMessages(afterID int64, limit int) []Msg {
-	return a.client.Messages(afterID, limit)
+	return a.hub.Messages(afterID, limit)
 }
 
 // ClearMessages clears the in-memory message buffer.
 func (a *App) ClearMessages() {
-	a.client.Clear()
+	a.hub.Clear()
 }
 
 // GetPaths returns useful directories for the UI footer.

@@ -48,6 +48,9 @@ func TestHTTPRoundTrip(t *testing.T) {
 	msgs := c.Messages(0, 50)
 	var sawIn bool
 	for _, m := range msgs {
+		if m.Dir == "sys" && strings.Contains(m.Text, "ms") && strings.Contains(m.Text, "http") {
+			t.Fatalf("status note should not be recorded: %q", m.Text)
+		}
 		if m.Dir == "in" && strings.Contains(m.Text, `"ok":true`) {
 			sawIn = true
 		}
@@ -200,7 +203,7 @@ func TestRecordHTTP(t *testing.T) {
 	}
 
 	msgs := c.Messages(0, 50)
-	var sawOut, sawIn, sawSys bool
+	var sawOut, sawIn bool
 	for _, m := range msgs {
 		if m.Dir == "out" && strings.Contains(m.Text, `"name":"n"`) && m.Exchange != nil && m.Exchange.Manual {
 			sawOut = true
@@ -208,11 +211,11 @@ func TestRecordHTTP(t *testing.T) {
 		if m.Dir == "in" && strings.Contains(m.Text, `"id":1`) && m.Exchange != nil && m.Exchange.StatusCode == 201 {
 			sawIn = true
 		}
-		if m.Dir == "sys" && strings.Contains(m.Text, "recorded") {
-			sawSys = true
+		if m.Dir == "sys" && (strings.Contains(m.Text, "recorded") || (strings.Contains(m.Text, "http") && strings.Contains(m.Text, "ms"))) {
+			t.Fatalf("http status/recorded note should not be recorded: %q", m.Text)
 		}
 	}
-	if !sawOut || !sawIn || !sawSys {
+	if !sawOut || !sawIn {
 		t.Fatalf("msgs=%+v", msgs)
 	}
 
@@ -235,6 +238,18 @@ func TestRecordHTTP(t *testing.T) {
 	}
 	if loaded == nil || !loaded.Manual || loaded.ResBody != `{"id":1}` || loaded.ReqBody != `{"name":"n"}` {
 		t.Fatalf("loaded exchange=%+v", loaded)
+	}
+}
+
+func TestRecordHTTPDoesNotDropLive(t *testing.T) {
+	c := newWSClient(&App{baseDir: t.TempDir()})
+	t.Cleanup(c.Disconnect)
+	c.wantOpen.Store(true)
+	if _, err := c.RecordHTTP(HTTPExchange{URL: "http://10.0.0.1/ping"}); err != nil {
+		t.Fatal(err)
+	}
+	if !c.wantOpen.Load() {
+		t.Fatal("record http should not drop a live websocket")
 	}
 }
 

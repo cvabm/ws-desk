@@ -6,6 +6,8 @@ export function ClearMessages():Promise<void>;
 
 export function Connect(arg1:main.ConnectOptions):Promise<void>;
 
+export function DeleteProfile(arg1:string):Promise<void>;
+
 export function Disconnect():Promise<void>;
 
 export function FormatJSON(arg1:string):Promise<string>;
@@ -35,5 +37,7 @@ export function RequestHTTP(arg1:main.ConnectOptions,arg2:string):Promise<main.H
 export function SaveProfile(arg1:main.Profile):Promise<void>;
 
 export function SearchSessions(arg1:string):Promise<Array<main.SessionInfo>>;
+
+export function SelectProfile(arg1:string):Promise<void>;
 
 export function Send(arg1:string):Promise<void>;

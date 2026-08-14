@@ -10,6 +10,10 @@ export function Connect(arg1) {
   return window['go']['main']['App']['Connect'](arg1);
 }
 
+export function DeleteProfile(arg1) {
+  return window['go']['main']['App']['DeleteProfile'](arg1);
+}
+
 export function Disconnect() {
   return window['go']['main']['App']['Disconnect']();
 }
@@ -68,6 +72,10 @@ export function SaveProfile(arg1) {
 
 export function SearchSessions(arg1) {
   return window['go']['main']['App']['SearchSessions'](arg1);
+}
+
+export function SelectProfile(arg1) {
+  return window['go']['main']['App']['SelectProfile'](arg1);
 }
 
 export function Send(arg1) {
