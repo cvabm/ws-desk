@@ -9,32 +9,35 @@ type HeaderItem struct {
 
 // Profile is a named connection preset (one per scheme://host[:port]).
 type Profile struct {
-	Name       string            `json:"name"`
-	URL        string            `json:"url"`
-	Protocol   string            `json:"protocol"`
-	Method     string            `json:"method,omitempty"`
-	Headers    map[string]string `json:"headers"`
-	HeaderList []HeaderItem      `json:"headerList,omitempty"`
-	AuthType   string            `json:"authType,omitempty"`
-	AuthToken  string            `json:"authToken,omitempty"`
-	AuthUser   string            `json:"authUser,omitempty"`
-	AuthPass   string            `json:"authPass,omitempty"`
+	Name         string            `json:"name"`
+	URL          string            `json:"url"`
+	Protocol     string            `json:"protocol"`
+	Method       string            `json:"method,omitempty"`
+	Headers      map[string]string `json:"headers"`
+	HeaderList   []HeaderItem      `json:"headerList,omitempty"`
+	AuthType     string            `json:"authType,omitempty"`
+	AuthToken    string            `json:"authToken,omitempty"`
+	AuthUser     string            `json:"authUser,omitempty"`
+	AuthPass     string            `json:"authPass,omitempty"`
 	BodyType     string            `json:"bodyType,omitempty"`
 	Body         string            `json:"body,omitempty"`
 	FormList     []HeaderItem      `json:"formList,omitempty"`
 	VariableList []HeaderItem      `json:"variableList,omitempty"`
 	Reconnect    bool              `json:"reconnect"`
 	PingSec      int               `json:"pingSec"`
+	// NoFollowRedirects keeps HTTP 3xx as the response (API-tester default is to follow).
+	NoFollowRedirects bool `json:"noFollowRedirects,omitempty"`
 }
 
 // ConnectOptions is used by the UI to open a connection.
 type ConnectOptions struct {
-	URL       string            `json:"url"`
-	Protocol  string            `json:"protocol"`
-	Method    string            `json:"method,omitempty"`
-	Headers   map[string]string `json:"headers"`
-	Reconnect bool              `json:"reconnect"`
-	PingSec   int               `json:"pingSec"`
+	URL               string            `json:"url"`
+	Protocol          string            `json:"protocol"`
+	Method            string            `json:"method,omitempty"`
+	Headers           map[string]string `json:"headers"`
+	Reconnect         bool              `json:"reconnect"`
+	PingSec           int               `json:"pingSec"`
+	NoFollowRedirects bool              `json:"noFollowRedirects,omitempty"`
 }
 
 // Msg is a single logged frame (in/out/sys).

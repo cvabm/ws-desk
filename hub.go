@@ -174,3 +174,9 @@ func (h *clientHub) Remove(name string) {
 		c.Disconnect()
 	}
 }
+
+func (h *clientHub) ClearCookies() {
+	if c := h.current(); c != nil {
+		c.ClearCookies()
+	}
+}

@@ -6,6 +6,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -16,9 +18,26 @@ const (
 	httpDialTimeout = 10 * time.Second
 )
 
+// insecureTLSConfig allows lab / self-signed certs (debug client).
+func insecureTLSConfig() *tls.Config {
+	return &tls.Config{
+		InsecureSkipVerify: true,
+		MinVersion:         tls.VersionTLS12,
+	}
+}
+
+func newCookieJar() http.CookieJar {
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil
+	}
+	return jar
+}
+
 func newHTTPDoer() *http.Client {
 	return &http.Client{
 		Timeout: httpReqTimeout,
+		Jar:     newCookieJar(),
 		Transport: &http.Transport{
 			Proxy: http.ProxyFromEnvironment,
 			DialContext: (&net.Dialer{
@@ -30,11 +49,49 @@ func newHTTPDoer() *http.Client {
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true, // debug client: allow lab / self-signed certs
-				MinVersion:         tls.VersionTLS12,
-			},
+			TLSClientConfig:       insecureTLSConfig(),
 		},
+	}
+}
+
+// httpDoerFor shares Transport and CookieJar with base. noFollow returns 3xx as-is.
+func httpDoerFor(base *http.Client, noFollow bool) *http.Client {
+	if base == nil || !noFollow {
+		return base
+	}
+	clone := *base
+	clone.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &clone
+}
+
+func snapshotJarCookies(headers map[string]string, jar http.CookieJar, rawURL string) {
+	if jar == nil || headers == nil {
+		return
+	}
+	for k, v := range headers {
+		if strings.EqualFold(k, "Cookie") && strings.TrimSpace(v) != "" {
+			return
+		}
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u == nil {
+		return
+	}
+	cs := jar.Cookies(u)
+	if len(cs) == 0 {
+		return
+	}
+	parts := make([]string, 0, len(cs))
+	for _, ck := range cs {
+		if ck == nil {
+			continue
+		}
+		parts = append(parts, ck.Name+"="+ck.Value)
+	}
+	if len(parts) > 0 {
+		headers["Cookie"] = strings.Join(parts, "; ")
 	}
 }
 

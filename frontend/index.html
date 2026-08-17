@@ -33,6 +33,7 @@
         <option value="OPTIONS">OPTIONS</option>
       </select>
       <label id="reconnectWrap" class="check"><input id="reconnect" type="checkbox" checked/> 重连</label>
+      <label id="redirectWrap" class="check hidden"><input id="followRedirects" type="checkbox" checked/> 重定向</label>
       <button id="btnToggle" class="btn primary" type="button">连接</button>
       <button id="btnSendTop" class="btn primary hidden" type="button">发送</button>
       <button id="btnRecord" class="btn ghost" type="button" title="打开手动记录，不发送">记录</button>
@@ -54,6 +55,8 @@
           <div class="pane-head">
             <span>请求</span>
             <div class="pane-actions">
+              <button id="btnClearCookies" class="btn ghost" type="button" title="清除此主机本次会话的 Cookie">清 Cookie</button>
+              <button id="btnCurl" class="btn ghost" type="button" title="复制当前请求为 cURL">cURL</button>
               <button id="btnFormatHttp" class="btn ghost" type="button">格式化</button>
             </div>
           </div>
@@ -111,6 +114,7 @@
         <div class="pane-head">
           <span id="detailTitle">详情</span>
           <div class="pane-actions">
+            <button id="btnCurlDetail" class="btn ghost hidden" type="button" title="复制为 cURL">cURL</button>
             <button id="btnFill" class="btn ghost hidden" type="button" title="把这条记录填回请求栏">填回</button>
           </div>
         </div>

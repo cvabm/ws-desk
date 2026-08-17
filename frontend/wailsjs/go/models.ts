@@ -7,6 +7,7 @@ export namespace main {
 	    headers: Record<string, string>;
 	    reconnect: boolean;
 	    pingSec: number;
+	    noFollowRedirects?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConnectOptions(source);
@@ -20,6 +21,7 @@ export namespace main {
 	        this.headers = source["headers"];
 	        this.reconnect = source["reconnect"];
 	        this.pingSec = source["pingSec"];
+	        this.noFollowRedirects = source["noFollowRedirects"];
 	    }
 	}
 	export class HTTPExchange {
@@ -157,6 +159,7 @@ export namespace main {
 	    variableList?: HeaderItem[];
 	    reconnect: boolean;
 	    pingSec: number;
+	    noFollowRedirects?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Profile(source);
@@ -180,6 +183,7 @@ export namespace main {
 	        this.variableList = this.convertValues(source["variableList"], HeaderItem);
 	        this.reconnect = source["reconnect"];
 	        this.pingSec = source["pingSec"];
+	        this.noFollowRedirects = source["noFollowRedirects"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

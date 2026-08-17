@@ -112,6 +112,13 @@ func (a *App) DeleteProfile(name string) error {
 	return nil
 }
 
+// ClearCookies drops the in-memory cookie jar for the active host.
+func (a *App) ClearCookies() {
+	if a.hub != nil {
+		a.hub.ClearCookies()
+	}
+}
+
 // SelectProfile makes this profile the active live session.
 func (a *App) SelectProfile(name string) {
 	if a.hub != nil {

@@ -280,6 +280,28 @@ export function keepTemplatesInRows(currentRows, previousRows, vars) {
   });
 }
 
+function curlQuote(s) {
+  return `"${String(s ?? '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+export function toCurl({ method, url, headers, body, followRedirects }) {
+  const parts = ['curl.exe'];
+  if (/^https:/i.test(url || '')) parts.push('-k');
+  if (followRedirects) parts.push('-L');
+  else parts.push('--max-redirs', '0');
+  const m = String(method || 'GET').toUpperCase();
+  if (m && m !== 'GET') parts.push('-X', m);
+  parts.push(curlQuote(url || ''));
+  for (const [k, v] of Object.entries(headers || {})) {
+    if (!String(k || '').trim()) continue;
+    parts.push('-H', curlQuote(`${k}: ${v}`));
+  }
+  if (body && !methodOmitsBody(m)) {
+    parts.push('--data-raw', curlQuote(body));
+  }
+  return parts.join(' ');
+}
+
 export function parseHTTPOutPreview(text) {
   const m = String(text || '').trim().match(
     /^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+(\S+)$/i,

@@ -219,7 +219,7 @@ func (c *wsClient) RequestHTTP(opts ConnectOptions, body string) (*HTTPExchange,
 	if err != nil {
 		return nil, err
 	}
-	return c.doHTTP(opts, doer, body)
+	return c.doHTTP(opts, httpDoerFor(doer, opts.NoFollowRedirects), body)
 }
 
 // RecordHTTP stores a request/response pair in the live list and daily log without sending.
@@ -362,7 +362,7 @@ func (c *wsClient) doHTTP(opts ConnectOptions, doer *http.Client, body string) (
 	}
 	if doer == nil {
 		ex.Error = "http client missing"
-		return ex, fmt.Errorf("http client missing")
+		return ex, nil
 	}
 
 	method := ex.Method
@@ -379,10 +379,13 @@ func (c *wsClient) doHTTP(opts ConnectOptions, doer *http.Client, body string) (
 	req, err := http.NewRequest(method, opts.URL, reader)
 	if err != nil {
 		ex.Error = err.Error()
-		return ex, err
+		return ex, nil
 	}
 	applyHTTPHeaders(req, opts.Headers, reqBody)
 	ex.ReqHeaders = flattenHeader(req.Header)
+	if doer != nil {
+		snapshotJarCookies(ex.ReqHeaders, doer.Jar, opts.URL)
+	}
 
 	c.pushEx("out", formatHTTPOut(method, opts.URL, reqBody), ex)
 	start := time.Now()
@@ -390,8 +393,8 @@ func (c *wsClient) doHTTP(opts ConnectOptions, doer *http.Client, body string) (
 	ex.TimeMs = time.Since(start).Milliseconds()
 	if err != nil {
 		ex.Error = err.Error()
-		c.push("sys", "http error: "+err.Error())
-		return ex, err
+		c.pushEx("in", "http error: "+err.Error(), ex)
+		return ex, nil
 	}
 	defer resp.Body.Close()
 
@@ -404,8 +407,8 @@ func (c *wsClient) doHTTP(opts ConnectOptions, doer *http.Client, body string) (
 	ex.ResBody = text
 	if err != nil {
 		ex.Error = err.Error()
-		c.push("sys", fmt.Sprintf("http %s  %dms  read error: %s", resp.Status, ex.TimeMs, err.Error()))
-		return ex, err
+		c.pushEx("in", formatHTTPIn(resp.Status, text, truncated), ex)
+		return ex, nil
 	}
 	c.pushEx("in", formatHTTPIn(resp.Status, text, truncated), ex)
 	return ex, nil
@@ -470,6 +473,7 @@ func (c *wsClient) dialOnce(ep uint64) error {
 
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
+		TLSClientConfig:  insecureTLSConfig(),
 		Subprotocols:     nil,
 	}
 	if opts.Protocol != "" {
@@ -661,4 +665,13 @@ func (c *wsClient) emitStatus() {
 		return
 	}
 	runtime.EventsEmit(c.app.ctx, "status", c.Status())
+}
+
+func (c *wsClient) ClearCookies() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.httpDoer == nil {
+		return
+	}
+	c.httpDoer.Jar = newCookieJar()
 }

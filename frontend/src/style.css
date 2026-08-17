@@ -156,9 +156,9 @@ html, body {
 
 .select.profile {
   width: auto;
-  min-width: 120px;
-  max-width: 320px;
-  flex: 0 1 220px;
+  min-width: 140px;
+  max-width: 420px;
+  flex: 0 1 280px;
   overflow: hidden;
   text-overflow: ellipsis;
   font-family: var(--mono);
@@ -435,10 +435,6 @@ html, body {
 .app.history .list {
   flex: 1 1 0%;
   min-height: 0;
-}
-
-.app.history #btnFill {
-  display: none;
 }
 
 .app.http .detail-pane .pane-head span { color: var(--text); }

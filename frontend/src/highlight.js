@@ -221,15 +221,14 @@ function bodyBlock(raw) {
 /** Render a Postman-like HTTP request/response snapshot. */
 export function renderHTTPExchange(ex) {
   if (!ex) return '';
-  if (ex.error && !ex.statusCode) {
-    return `<div class="resp-error">${escapeHtml(ex.error)}</div>`;
-  }
   const code = ex.statusCode || 0;
   const size = ex.bytes || 0;
   const sizeLabel = size < 1024 ? `${size} B` : `${(size / 1024).toFixed(1)} KB`;
+  const statusLabel = ex.status || (ex.error && !code ? 'Error' : String(code));
+  const statusCls = statusClass(code) || (ex.error ? 'err' : '');
   return (
     `<div class="resp-head">` +
-      `<span class="resp-code ${statusClass(code)}">${escapeHtml(ex.status || String(code))}</span>` +
+      `<span class="resp-code ${statusCls}">${escapeHtml(statusLabel)}</span>` +
       (ex.manual ? `<span class="resp-badge">手动</span>` : `<span class="resp-stat">${ex.timeMs ?? 0} ms</span>`) +
       `<span class="resp-stat">${escapeHtml(sizeLabel)}</span>` +
       `<span class="resp-stat">${escapeHtml(ex.method || '')} ${escapeHtml(ex.url || '')}</span>` +

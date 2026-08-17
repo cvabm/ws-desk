@@ -20,8 +20,9 @@ import {
   LoadSession,
   PickAndLoadSession,
   OpenLogDir,
+  ClearCookies,
 } from '../wailsjs/go/main/App';
-import { EventsOn } from '../wailsjs/runtime/runtime';
+import { EventsOn, ClipboardSetText } from '../wailsjs/runtime/runtime';
 import { renderDetailHtml, renderHTTPExchange, renderWSRecord, toggleJsonNode } from './highlight.js';
 import {
   emptyRow,
@@ -42,6 +43,7 @@ import {
   expandMap,
   keepTemplate,
   keepTemplatesInRows,
+  toCurl,
 } from './http-ui.js';
 
 const $ = (id) => document.getElementById(id);
@@ -74,6 +76,11 @@ const el = {
   method: $('method'),
   reconnect: $('reconnect'),
   reconnectWrap: $('reconnectWrap'),
+  followRedirects: $('followRedirects'),
+  redirectWrap: $('redirectWrap'),
+  btnCurl: $('btnCurl'),
+  btnCurlDetail: $('btnCurlDetail'),
+  btnClearCookies: $('btnClearCookies'),
   btnToggle: $('btnToggle'),
   btnSendTop: $('btnSendTop'),
   btnRecord: $('btnRecord'),
@@ -147,10 +154,6 @@ const store = new Map();
 let allHistoryMsgs = [];
 let selectedId = 0;
 let lastSent = '';
-let lastBoundName = '';
-let lastBoundBody = '';
-/** @type {{key:string,value:string,enabled:boolean}[]} */
-let lastBoundForm = [emptyRow()];
 let historyMode = false;
 let activeHistKeyword = '';
 let historySessionURL = '';
@@ -281,7 +284,7 @@ function appendMsg(m, scroll = true) {
     <span class="b">${m.bytes || 0}b</span>
   `;
   row.querySelector('.p').textContent = preview(m.pretty || m.text);
-  row.title = '点击填回请求栏';
+  row.title = '点击查看详情';
   row.addEventListener('click', () => selectMsg(m.id));
   el.list.appendChild(row);
 
@@ -335,9 +338,7 @@ function selectMsg(id) {
   } else {
     setDetailHtml(renderDetailHtml(m.dir, m.time, m.pretty || m.text));
   }
-  const ok = fillFromMessage(m);
-  setFillButton(ok);
-  if (ok) flashFilled();
+  setFillButton(canFillFromMessage(m));
 }
 
 function setHistoryMode(on, label = '') {
@@ -488,6 +489,8 @@ function applyTransportUI(scheme) {
   el.protocol.classList.toggle('hidden', http);
   el.method.classList.toggle('hidden', !http);
   el.reconnectWrap?.classList.toggle('hidden', http);
+  el.redirectWrap?.classList.toggle('hidden', !http);
+  el.btnCurlDetail?.classList.toggle('hidden', !http);
   el.btnToggle?.classList.toggle('hidden', http);
   el.btnSendTop?.classList.toggle('hidden', !http);
   el.btnRecord?.classList.remove('hidden');
@@ -760,34 +763,19 @@ function loadBodyTypeFromProfile(p) {
   applyBodyTypeUI();
 }
 
-function bindLastBody() {
-  lastBoundName = profileNameFromURL(currentURL());
-  lastBoundBody = el.payload?.value || '';
-  lastBoundForm = cloneRows(formRows);
-}
-
-function resetBoundBody() {
-  lastBoundName = '';
-  lastBoundBody = '';
-  lastBoundForm = [emptyRow()];
-}
-
 function loadBodyFromProfile(p) {
-  lastBoundName = p?.name || profileNameFromURL(p?.url || '');
-  lastBoundBody = p?.body || '';
+  const savedBody = p?.body || '';
   if (Array.isArray(p?.formList) && p.formList.length) {
-    lastBoundForm = cloneRows(p.formList);
-  } else if (p?.bodyType === 'form' && lastBoundBody) {
-    lastBoundForm = parseForm(lastBoundBody);
-  } else {
-    lastBoundForm = [emptyRow()];
-  }
-  if (bodyType === 'form') {
-    formRows = cloneRows(lastBoundForm);
-    if (el.payload) el.payload.value = '';
+    formRows = cloneRows(p.formList);
+  } else if (p?.bodyType === 'form' && savedBody) {
+    formRows = parseForm(savedBody);
   } else {
     formRows = [emptyRow()];
-    if (el.payload) el.payload.value = lastBoundBody;
+  }
+  if (bodyType === 'form') {
+    if (el.payload) el.payload.value = '';
+  } else {
+    if (el.payload) el.payload.value = savedBody;
   }
   lastSent = currentBody();
 }
@@ -974,7 +962,6 @@ function applyHTTPExchange(ex) {
   renderRequestEditor();
   selectProfileHost(currentURL());
   setReqTab(String(ex.reqBody || '').trim() ? 'body' : 'params');
-  persistProfile();
   return true;
 }
 
@@ -993,7 +980,6 @@ function applyWSRecord(rec) {
   if (recordModalOpen()) applyRecordDraftToForm();
   withoutSessionReset(() => applyTransportFromURL());
   selectProfileHost(rec.url);
-  persistProfile();
   return Boolean(rec.url || rec.out || rec.in);
 }
 
@@ -1026,7 +1012,6 @@ function fillPlainMessage(m) {
       recordDraft.resBody = m.text || '';
       if (recordModalOpen() && el.recResBody) el.recResBody.value = recordDraft.resBody;
     }
-    persistProfile();
     return true;
   }
   if (historySessionURL) {
@@ -1045,8 +1030,15 @@ function fillPlainMessage(m) {
     recordDraft.in = m.text || '';
     if (recordModalOpen() && el.recIn) el.recIn.value = recordDraft.in;
   }
-  persistProfile();
   return true;
+}
+
+function canFillFromMessage(m) {
+  if (!m) return false;
+  if (m.exchange || m.ws) return true;
+  const near = siblingFillSource(m);
+  if (near?.exchange || near?.ws) return true;
+  return m.dir === 'out' || m.dir === 'in';
 }
 
 function fillFromMessage(m) {
@@ -1071,6 +1063,7 @@ async function applyProfile(p) {
     el.method.value = 'GET';
   }
   el.reconnect.checked = p.reconnect !== false;
+  if (el.followRedirects) el.followRedirects.checked = !p.noFollowRedirects;
   loadHeadersFromProfile(p);
   loadVariablesFromProfile(p);
   loadAuthFromProfile(p);
@@ -1112,9 +1105,10 @@ function clearEditor() {
   headerRows = [emptyRow()];
   varRows = [emptyRow()];
   formRows = [emptyRow()];
-  resetBoundBody();
+  lastSent = '';
   resetRecordDraft();
   activeProfileName = '';
+  if (el.followRedirects) el.followRedirects.checked = true;
   loadAuthFromProfile(null);
   loadBodyTypeFromProfile(null);
   applyTransportFromURL();
@@ -1231,6 +1225,10 @@ function closeUrlModal() {
   setUrlModalError('');
 }
 
+function urlModalHasDraft() {
+  return Boolean(String(el.urlModalInput?.value || '').trim());
+}
+
 async function submitUrlModal() {
   const raw = el.urlModalInput?.value || '';
   const err = validateNewURL(raw);
@@ -1281,7 +1279,68 @@ function currentOpts() {
     headers: currentHeaders(),
     reconnect: el.reconnect.checked,
     pingSec: 20,
+    noFollowRedirects: el.followRedirects ? !el.followRedirects.checked : false,
   };
+}
+
+function curlFollowRedirects() {
+  return el.followRedirects ? el.followRedirects.checked : true;
+}
+
+function currentCurlSpec() {
+  const opts = resolvedOpts();
+  return {
+    method: opts.method,
+    url: opts.url,
+    headers: opts.headers,
+    body: isHTTPMode() ? resolvedBody() : '',
+    followRedirects: curlFollowRedirects(),
+  };
+}
+
+function exchangeCurlSpec(ex) {
+  return {
+    method: ex.method,
+    url: ex.url,
+    headers: ex.reqHeaders || {},
+    body: ex.reqBody || '',
+    followRedirects: curlFollowRedirects(),
+  };
+}
+
+async function copyText(text) {
+  const s = String(text || '');
+  if (!s) return false;
+  try {
+    if (await ClipboardSetText(s)) return true;
+  } catch (_) {}
+  try {
+    await navigator.clipboard.writeText(s);
+    return true;
+  } catch (_) {}
+  return false;
+}
+
+function flashButton(btn, label, ms = 900) {
+  if (!btn) return;
+  const prev = btn.textContent;
+  btn.textContent = label;
+  clearTimeout(btn._flashTimer);
+  btn._flashTimer = setTimeout(() => {
+    btn.textContent = prev;
+  }, ms);
+}
+
+async function copyCurl(fromDetail) {
+  const m = fromDetail ? store.get(selectedId) : null;
+  const spec = m?.exchange ? exchangeCurlSpec(m.exchange) : currentCurlSpec();
+  if (!spec.url) {
+    setDetailEmpty('请先填写 URL');
+    return;
+  }
+  const ok = await copyText(toCurl(spec));
+  const btn = fromDetail ? el.btnCurlDetail : el.btnCurl;
+  flashButton(btn, ok ? '已复制' : '复制失败');
 }
 
 async function persistProfile(selectName) {
@@ -1307,10 +1366,11 @@ async function persistProfile(selectName) {
     authUser: authState.user,
     authPass: authState.pass,
     bodyType: currentBodyType(),
-    body: lastBoundName === name ? lastBoundBody : '',
-    formList: lastBoundName === name ? cloneRows(lastBoundForm) : [],
+    body: currentBody(),
+    formList: cloneRows(formRows),
     reconnect: el.reconnect.checked,
     pingSec: 20,
+    noFollowRedirects: el.followRedirects ? !el.followRedirects.checked : false,
   };
   try {
     await SaveProfile(p);
@@ -1383,7 +1443,6 @@ async function sendMsg() {
       await Send(text);
     }
     lastSent = text;
-    bindLastBody();
     await persistProfile();
   } catch (e) {
     setDetailEmpty(String(e));
@@ -1396,6 +1455,7 @@ async function formatPayload() {
   const text = el.payload?.value || '';
   if (!text.trim()) return;
   el.payload.value = await FormatJSON(text);
+  schedulePersist();
 }
 
 async function formatRecordField(target) {
@@ -1655,10 +1715,8 @@ async function init() {
   el.btnUrlModalClose?.addEventListener('click', closeUrlModal);
   el.btnUrlModalCancel?.addEventListener('click', closeUrlModal);
   el.btnUrlModalOk?.addEventListener('click', submitUrlModal);
-  el.urlModal?.addEventListener('click', (e) => {
-    if (e.target === el.urlModal) closeUrlModal();
-  });
   el.urlModalInput?.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter') {
       e.preventDefault();
       submitUrlModal();
@@ -1697,6 +1755,17 @@ async function init() {
       flashFilled();
     }
   });
+  el.btnCurl?.addEventListener('click', () => copyCurl(false));
+  el.btnCurlDetail?.addEventListener('click', () => copyCurl(true));
+  el.btnClearCookies?.addEventListener('click', async () => {
+    try {
+      await ClearCookies();
+      flashButton(el.btnClearCookies, '已清除');
+    } catch (e) {
+      setDetailEmpty(String(e));
+    }
+  });
+  el.followRedirects?.addEventListener('change', persistProfile);
   el.reqTabs?.addEventListener('click', (e) => {
     const tab = e.target?.closest?.('.req-tab')?.dataset?.tab;
     if (tab) setReqTab(tab);
@@ -1781,6 +1850,7 @@ async function init() {
   el.btnFmtRecReq?.addEventListener('click', () => formatRecordField(el.recReqBody));
   el.btnFmtRecRes?.addEventListener('click', () => formatRecordField(el.recResBody));
 
+  el.payload.addEventListener('input', schedulePersist);
   el.payload.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
@@ -1807,6 +1877,7 @@ async function init() {
       return;
     }
     if (urlModalOpen()) {
+      if (e.isComposing || e.keyCode === 229 || urlModalHasDraft()) return;
       closeUrlModal();
       return;
     }
