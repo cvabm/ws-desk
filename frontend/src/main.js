@@ -50,6 +50,7 @@ import {
 
 const $ = (id) => document.getElementById(id);
 const THEME_KEY = 'ws-desk-theme';
+const CATALOG_KEY = 'ws-desk-catalog';
 
 const HTTP_SCHEMES = new Set(['http', 'https']);
 const ALL_SCHEMES = new Set(['ws', 'wss', 'http', 'https']);
@@ -92,7 +93,14 @@ const el = {
   reqBuilder: $('reqBuilder'),
   reqMeta: $('reqMeta'),
   reqTitle: $('reqTitle'),
+  reqModule: $('reqModule'),
   reqDesc: $('reqDesc'),
+  moduleList: $('moduleList'),
+  catalogPane: $('catalogPane'),
+  catalogTitle: $('catalogTitle'),
+  catalogList: $('catalogList'),
+  catalogFilter: $('catalogFilter'),
+  btnCatalogToggle: $('btnCatalogToggle'),
   reqTabs: $('reqTabs'),
   tabParams: $('tabParams'),
   tabHeaders: $('tabHeaders'),
@@ -656,6 +664,7 @@ function applyTransportUI(scheme) {
     applyBodyTypeUI();
     setReqTab(reqTab || 'body');
   }
+  if (modeChanged) renderCatalog();
   if (el.payload) {
     el.payload.placeholder = http
       ? '请求体  ·  Ctrl+Enter 发送'
@@ -1225,6 +1234,7 @@ async function applyProfile(p) {
   if (isHTTPMode()) renderSavedSelect(matchSavedId());
   else renderSendSelect(matchSavedWSId());
   loadReqMeta(currentSavedRequest());
+  renderCatalog();
   await activateCurrent();
 }
 
@@ -1268,6 +1278,7 @@ function clearEditor() {
   renderSavedSelect('');
   renderSendSelect('');
   loadReqMeta(null);
+  renderCatalog();
 }
 
 let confirmResolver = null;
@@ -1276,6 +1287,7 @@ let sendSelectSig = '';
 let activeSavedId = '';
 let savedFilterArmed = false;
 let sendFilterArmed = false;
+const catalogClosedModules = new Set();
 
 function confirmModalOpen() {
   return Boolean(el.confirmModal && !el.confirmModal.classList.contains('hidden'));
@@ -1627,8 +1639,13 @@ function currentReqDesc() {
   return String(el.reqDesc?.value || '').trim();
 }
 
+function currentReqModule() {
+  return String(el.reqModule?.value || '').trim();
+}
+
 function loadReqMeta(req) {
   if (el.reqTitle) el.reqTitle.value = req?.title || '';
+  if (el.reqModule) el.reqModule.value = req?.module || '';
   if (el.reqDesc) el.reqDesc.value = req?.description || '';
 }
 
@@ -1636,6 +1653,7 @@ function flushReqMeta() {
   const req = currentSavedRequest();
   if (!req) return;
   req.title = currentReqTitle();
+  req.module = currentReqModule();
   req.description = currentReqDesc();
 }
 
@@ -1645,20 +1663,260 @@ function rematchSavedFromEditor() {
   flushReqMeta();
   activeSavedId = id || '';
   loadReqMeta(currentSavedRequest());
+  renderCatalog();
 }
 
 function onReqMetaInput() {
   const req = currentSavedRequest();
   if (req) {
     req.title = currentReqTitle();
+    req.module = currentReqModule();
     req.description = currentReqDesc();
     if (isHTTPMode()) {
       if (savedMenuOpen()) renderSavedSelect();
     } else if (sendMenuOpen()) {
       renderSendSelect();
     }
+    renderCatalog();
   }
   schedulePersist();
+}
+
+function catalogOpen() {
+  return localStorage.getItem(CATALOG_KEY) !== 'off';
+}
+
+function setCatalogOpen(on) {
+  localStorage.setItem(CATALOG_KEY, on ? 'on' : 'off');
+  el.app?.classList.toggle('catalog-off', !on);
+  if (el.btnCatalogToggle) {
+    el.btnCatalogToggle.title = on ? '收起接口目录' : '展开接口目录';
+    el.btnCatalogToggle.setAttribute('aria-label', el.btnCatalogToggle.title);
+  }
+}
+
+function catalogRequests() {
+  return isHTTPMode() ? currentHTTPRequests() : currentWSMessages();
+}
+
+function requestModuleName(r) {
+  return String(r?.module || '').trim();
+}
+
+function currentModules() {
+  const names = new Set();
+  for (const r of currentProfileRequests()) {
+    const m = requestModuleName(r);
+    if (m) names.add(m);
+  }
+  return [...names].sort((a, b) => a.localeCompare(b, 'zh'));
+}
+
+function fillModuleList() {
+  if (!el.moduleList) return;
+  el.moduleList.innerHTML = '';
+  for (const name of currentModules()) {
+    const opt = document.createElement('option');
+    opt.value = name;
+    el.moduleList.appendChild(opt);
+  }
+}
+
+function catalogFilterKeyword() {
+  return String(el.catalogFilter?.value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function catalogMatches(r, kw) {
+  if (!kw) return true;
+  if (isHTTPMode()) return savedRequestMatches(r, kw);
+  return savedWSMatches(r, kw);
+}
+
+function catalogItemLabel(r) {
+  if (isHTTPMode()) {
+    return requestDisplayTitle(r) || requestItemPath(r) || r?.name || '';
+  }
+  return requestDisplayTitle(r) || wsCmdLabel(r) || oneLinePreview(r?.body || r?.name || '', 48);
+}
+
+function compareCatalogItems(a, b) {
+  const at = catalogItemLabel(a);
+  const bt = catalogItemLabel(b);
+  const c = String(at).localeCompare(String(bt), 'zh');
+  if (c) return c;
+  return String(a?.name || '').localeCompare(String(b?.name || ''), 'zh');
+}
+
+function groupCatalogRequests(reqs) {
+  const map = new Map();
+  for (const r of reqs) {
+    const key = requestModuleName(r);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(r);
+  }
+  for (const items of map.values()) items.sort(compareCatalogItems);
+  const keys = [...map.keys()].sort((a, b) => {
+    if (!a) return 1;
+    if (!b) return -1;
+    return a.localeCompare(b, 'zh');
+  });
+  return keys.map((module) => ({ module, items: map.get(module) }));
+}
+
+function renderCatalog() {
+  fillModuleList();
+  if (!el.catalogList) return;
+  const all = catalogRequests();
+  const kw = catalogFilterKeyword();
+  const reqs = kw ? all.filter((r) => catalogMatches(r, kw)) : all;
+  if (el.catalogTitle) el.catalogTitle.textContent = all.length ? `接口 ${all.length}` : '接口';
+  el.catalogList.innerHTML = '';
+  if (!currentProfile() && !profileNameFromURL(currentURL())) {
+    const empty = document.createElement('div');
+    empty.className = 'catalog-empty';
+    empty.textContent = '先增加地址，发送后的接口会按模块出现在这里。';
+    el.catalogList.appendChild(empty);
+    return;
+  }
+  if (!all.length) {
+    const empty = document.createElement('div');
+    empty.className = 'catalog-empty';
+    empty.textContent = isHTTPMode()
+      ? '发送后会按方法 + 路径出现在这里，可填写模块分组。'
+      : '发送后会按 cmd 出现在这里，可填写模块分组。';
+    el.catalogList.appendChild(empty);
+    return;
+  }
+  if (!reqs.length) {
+    const empty = document.createElement('div');
+    empty.className = 'catalog-empty';
+    empty.textContent = `没有匹配 “${el.catalogFilter?.value?.trim() || kw}”`;
+    el.catalogList.appendChild(empty);
+    return;
+  }
+  for (const group of groupCatalogRequests(reqs)) {
+    const wrap = document.createElement('div');
+    wrap.className = 'catalog-group-wrap';
+    const head = document.createElement('button');
+    head.type = 'button';
+    head.className = 'catalog-group';
+    head.dataset.module = group.module;
+    const closed = !kw && catalogClosedModules.has(group.module);
+    const caret = document.createElement('span');
+    caret.className = 'catalog-caret';
+    caret.textContent = closed ? '▸' : '▾';
+    const name = document.createElement('span');
+    name.className = 'catalog-group-name';
+    name.textContent = group.module || '未分组';
+    const count = document.createElement('span');
+    count.className = 'catalog-group-count';
+    count.textContent = String(group.items.length);
+    head.appendChild(caret);
+    head.appendChild(name);
+    head.appendChild(count);
+    wrap.appendChild(head);
+    const box = document.createElement('div');
+    box.className = 'catalog-items' + (closed ? ' hidden' : '');
+    for (const r of group.items) {
+      box.appendChild(makeCatalogItem(r, kw));
+    }
+    wrap.appendChild(box);
+    el.catalogList.appendChild(wrap);
+  }
+}
+
+function makeCatalogItem(r, kw) {
+  const item = document.createElement('div');
+  item.className = 'catalog-item' + (r.id === activeSavedId ? ' on' : '');
+  item.dataset.id = r.id;
+  const main = document.createElement('div');
+  main.className = 'catalog-item-main';
+  const line = document.createElement('div');
+  line.className = 'catalog-item-line';
+  if (isHTTPMode()) {
+    const method = String(r.method || 'GET').toUpperCase();
+    const path = requestItemPath(r);
+    const title = requestDisplayTitle(r);
+    const desc = requestDescription(r);
+    item.title = [title, `${method} ${path}`, desc].filter(Boolean).join('\n');
+    const m = document.createElement('span');
+    m.className = `saved-item-method ${method.toLowerCase()}`;
+    fillHighlighted(m, method, kw);
+    line.appendChild(m);
+    const head = document.createElement('span');
+    head.className = title ? 'saved-item-title' : 'saved-item-path';
+    fillHighlighted(head, title || path, kw);
+    line.appendChild(head);
+    main.appendChild(line);
+    const subParts = [];
+    if (title) subParts.push(path);
+    if (desc) subParts.push(desc);
+    if (subParts.length) {
+      const sub = document.createElement('div');
+      sub.className = 'catalog-item-sub';
+      fillHighlighted(sub, subParts.join(' · '), kw);
+      main.appendChild(sub);
+    }
+  } else {
+    const title = requestDisplayTitle(r);
+    const cmd = wsCmdLabel(r);
+    const preview = oneLinePreview(r.body || r.name || '', 64);
+    const desc = requestDescription(r);
+    item.title = [title, cmd, preview, desc].filter(Boolean).join('\n');
+    const headText = title || cmd || preview;
+    if (headText) {
+      const n = document.createElement('span');
+      n.className = title ? 'saved-item-title' : 'saved-item-cmd';
+      fillHighlighted(n, headText, kw);
+      line.appendChild(n);
+    }
+    if (title && cmd && cmd !== title) {
+      const c = document.createElement('span');
+      c.className = 'saved-item-cmd';
+      fillHighlighted(c, cmd, kw);
+      line.appendChild(c);
+    }
+    if (line.childNodes.length) main.appendChild(line);
+    const subParts = [];
+    if (preview && preview !== headText) subParts.push(preview);
+    if (desc) subParts.push(desc);
+    if (subParts.length) {
+      const sub = document.createElement('div');
+      sub.className = 'catalog-item-sub';
+      fillHighlighted(sub, subParts.join(' · '), kw);
+      main.appendChild(sub);
+    }
+  }
+  item.appendChild(main);
+  item.appendChild(makeSavedDelButton(catalogItemLabel(r)));
+  return item;
+}
+
+function onCatalogClick(e) {
+  const group = e.target?.closest?.('.catalog-group');
+  if (group && el.catalogList?.contains(group)) {
+    const key = group.dataset.module || '';
+    if (catalogClosedModules.has(key)) catalogClosedModules.delete(key);
+    else catalogClosedModules.add(key);
+    renderCatalog();
+    return;
+  }
+  const del = e.target?.closest?.('.saved-item-del');
+  if (del) {
+    e.preventDefault();
+    e.stopPropagation();
+    const id = del.closest('.catalog-item')?.dataset?.id;
+    if (id) deleteNamedRequest(id);
+    return;
+  }
+  const item = e.target?.closest?.('.catalog-item');
+  if (item?.dataset?.id) pickCatalogRequest(item.dataset.id);
+}
+
+async function pickCatalogRequest(id) {
+  if (isHTTPMode()) await pickSavedRequest(id);
+  else await pickSavedWSMessage(id);
+  renderCatalog();
 }
 
 function currentSavedRequest() {
@@ -1791,6 +2049,8 @@ function snapshotCurrentRequest(name, id) {
     name,
     title: currentReqTitle() || prev?.title || '',
     description: currentReqDesc() || prev?.description || '',
+    module: currentReqModule() || prev?.module || '',
+    updatedAt: Date.now(),
     kind: 'http',
     url: currentURL(),
     method: el.method?.value || 'GET',
@@ -1813,6 +2073,8 @@ function snapshotWSMessage(name, id) {
     name,
     title: currentReqTitle() || prev?.title || '',
     description: currentReqDesc() || prev?.description || '',
+    module: currentReqModule() || prev?.module || '',
+    updatedAt: Date.now(),
     kind: 'ws',
     url: currentURL(),
     protocol: el.protocol?.value?.trim() || '',
@@ -1858,7 +2120,7 @@ function applySavedWSMessage(req) {
 }
 
 function savedSelectSignature(reqs) {
-  return (reqs || []).map((r) => `${r.id}\t${r.name || ''}\t${r.title || ''}\t${r.description || ''}`).join('\n');
+  return (reqs || []).map((r) => `${r.id}\t${r.name || ''}\t${r.title || ''}\t${r.description || ''}\t${r.module || ''}`).join('\n');
 }
 
 function requestItemPath(r) {
@@ -1870,7 +2132,7 @@ function savedRequestHaystack(r) {
   const http = HTTP_SCHEMES.has(urlScheme(r?.url));
   const method = http ? String(r?.method || 'GET').toUpperCase() : '';
   const path = requestItemPath(r);
-  return `${method} ${path} ${r?.name || ''} ${r?.title || ''} ${r?.description || ''} ${r?.url || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
+  return `${method} ${path} ${r?.name || ''} ${r?.title || ''} ${r?.description || ''} ${r?.module || ''} ${r?.url || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
 function savedRequestMatches(r, kw) {
@@ -1983,7 +2245,7 @@ function renderSavedSelect(selectedId) {
 }
 
 function savedWSHaystack(r) {
-  return `${r?.name || ''} ${r?.title || ''} ${r?.description || ''} ${r?.body || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
+  return `${r?.name || ''} ${r?.title || ''} ${r?.description || ''} ${r?.module || ''} ${r?.body || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
 function savedWSMatches(r, kw) {
@@ -2137,6 +2399,7 @@ async function deleteNamedRequest(id) {
   }
   if (ws) renderSendSelect(activeSavedId);
   else renderSavedSelect(activeSavedId);
+  renderCatalog();
   if (httpOpen && canOpenSavedMenu()) {
     openSavedMenu();
     el.url?.focus();
@@ -2153,6 +2416,7 @@ async function pickSavedRequest(id) {
   activeSavedId = req.id;
   closeSavedMenu();
   renderSavedSelect(req.id);
+  renderCatalog();
   await persistProfile();
 }
 
@@ -2164,6 +2428,7 @@ async function pickSavedWSMessage(id) {
   sendFilterArmed = false;
   closeSendMenu();
   renderSendSelect(req.id);
+  renderCatalog();
   await persistProfile();
 }
 
@@ -2234,6 +2499,7 @@ async function persistProfile(selectName) {
       profiles.sort((a, b) => String(a.name).localeCompare(String(b.name)));
     }
     renderProfileSelect(selectName || name);
+    renderCatalog();
   } catch (_) {}
 }
 
@@ -2571,6 +2837,7 @@ async function pickSession() {
 
 async function init() {
   initTheme();
+  setCatalogOpen(catalogOpen());
   el.btnAddProfile?.addEventListener('click', () => openUrlModal());
   el.btnUrlModalClose?.addEventListener('click', closeUrlModal);
   el.btnUrlModalCancel?.addEventListener('click', closeUrlModal);
@@ -2814,7 +3081,14 @@ async function init() {
   });
   el.reconnect.addEventListener('change', persistProfile);
   el.reqTitle?.addEventListener('input', onReqMetaInput);
+  el.reqModule?.addEventListener('input', onReqMetaInput);
   el.reqDesc?.addEventListener('input', onReqMetaInput);
+  el.btnCatalogToggle?.addEventListener('click', () => setCatalogOpen(!catalogOpen()));
+  el.catalogFilter?.addEventListener('input', () => renderCatalog());
+  el.catalogList?.addEventListener('mousedown', (e) => {
+    if (e.target?.closest?.('.saved-item-del')) e.preventDefault();
+  });
+  el.catalogList?.addEventListener('click', onCatalogClick);
 
   EventsOn('message', (m) => {
     if (historyMode) return;

@@ -54,6 +54,18 @@
 
     <!-- main -->
     <main class="main">
+      <aside id="catalogPane" class="catalog-pane">
+        <div class="pane-head">
+          <button id="btnCatalogToggle" class="btn ghost bar-btn btn-icon catalog-toggle" type="button" title="收起接口目录" aria-label="收起接口目录">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.2 3.2L5.4 8l4.8 4.8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <span id="catalogTitle">接口</span>
+          <div class="pane-actions">
+            <input id="catalogFilter" class="input search-inline catalog-filter" type="search" spellcheck="false" placeholder="过滤…"/>
+          </div>
+        </div>
+        <div id="catalogList" class="catalog-list"></div>
+      </aside>
       <section class="list-pane">
         <div id="reqPane" class="req-pane hidden">
           <div class="pane-head">
@@ -66,10 +78,15 @@
           </div>
           <div id="reqBuilder" class="req-builder">
             <div id="reqMeta" class="req-meta">
-              <input id="reqTitle" class="input req-meta-title" type="text" spellcheck="false" maxlength="80"
-                     placeholder="标题，例如 登录"/>
+              <div class="req-meta-row">
+                <input id="reqTitle" class="input req-meta-title" type="text" spellcheck="false" maxlength="80"
+                       placeholder="标题，例如 登录"/>
+                <input id="reqModule" class="input req-meta-module" type="text" spellcheck="false" maxlength="80"
+                       list="moduleList" placeholder="模块" autocomplete="off"/>
+              </div>
               <input id="reqDesc" class="input req-meta-desc" type="text" spellcheck="false" maxlength="200"
                      placeholder="描述（可选）"/>
+              <datalist id="moduleList"></datalist>
             </div>
             <div id="reqTabs" class="req-tabs">
               <button type="button" class="req-tab" data-tab="params">参数</button>

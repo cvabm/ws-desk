@@ -274,3 +274,67 @@ func TestSavedRequestKeepsTitleAndDescription(t *testing.T) {
 		t.Fatalf("updated http = title %q desc %q", title, desc)
 	}
 }
+
+func TestSavedRequestKeepsModule(t *testing.T) {
+	dir := t.TempDir()
+	a := NewApp()
+	a.baseDir = dir
+	if err := os.MkdirAll(filepath.Join(dir, "servers"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	login, err := a.SaveRequest("ws://example.com", SavedRequest{
+		Name: "login", Title: "进房", Module: "房间", Kind: "ws",
+		URL: "ws://example.com/ws", Body: `{"cmd":"login"}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if login.Module != "房间" {
+		t.Fatalf("module = %q", login.Module)
+	}
+	if login.UpdatedAt == 0 {
+		t.Fatal("expected updatedAt")
+	}
+	if _, err := a.SaveRequest("ws://example.com", SavedRequest{
+		Name: "leave", Title: "离房", Module: "房间", Kind: "ws",
+		URL: "ws://example.com/ws", Body: `{"cmd":"leave"}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.SaveRequest("ws://example.com", SavedRequest{
+		Name: "ping", Title: "心跳", Kind: "ws",
+		URL: "ws://example.com/ws", Body: `{"cmd":"ping"}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := a.GetProfiles()
+	if len(got) != 1 {
+		t.Fatalf("profiles = %d", len(got))
+	}
+	var room, empty int
+	for _, r := range got[0].Requests {
+		if r.Module == "房间" {
+			room++
+		}
+		if r.Module == "" {
+			empty++
+		}
+	}
+	if room != 2 || empty != 1 {
+		t.Fatalf("grouped room=%d empty=%d", room, empty)
+	}
+
+	again, err := a.SaveRequest("ws://example.com", SavedRequest{
+		ID: login.ID, Name: "login", Title: "进房", Module: "房间/进房",
+		Kind: "ws", URL: "ws://example.com/ws", Body: `{"cmd":"login","room":2}`,
+		UpdatedAt: login.UpdatedAt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Module != "房间/进房" {
+		t.Fatalf("module after upsert = %q", again.Module)
+	}
+}

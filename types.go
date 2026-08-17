@@ -37,6 +37,8 @@ type SavedRequest struct {
 	Name        string       `json:"name"`
 	Title       string       `json:"title,omitempty"`
 	Description string       `json:"description,omitempty"`
+	Module      string       `json:"module,omitempty"`
+	UpdatedAt   int64        `json:"updatedAt,omitempty"`
 	Kind        string       `json:"kind,omitempty"` // http | ws
 	URL         string       `json:"url"`
 	Method      string       `json:"method,omitempty"`

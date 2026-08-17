@@ -149,6 +149,8 @@ export namespace main {
 	    name: string;
 	    title?: string;
 	    description?: string;
+	    module?: string;
+	    updatedAt?: number;
 	    kind?: string;
 	    url: string;
 	    method?: string;
@@ -172,6 +174,8 @@ export namespace main {
 	        this.name = source["name"];
 	        this.title = source["title"];
 	        this.description = source["description"];
+	        this.module = source["module"];
+	        this.updatedAt = source["updatedAt"];
 	        this.kind = source["kind"];
 	        this.url = source["url"];
 	        this.method = source["method"];

@@ -327,6 +327,10 @@ func (a *App) saveRequestOnProfile(profileHint string, req SavedRequest) (SavedR
 	}
 	req.Title = clipRunes(req.Title, 80)
 	req.Description = clipRunes(req.Description, 200)
+	req.Module = clipRunes(req.Module, 80)
+	if req.UpdatedAt <= 0 {
+		req.UpdatedAt = time.Now().UnixMilli()
+	}
 	req.URL = strings.TrimSpace(req.URL)
 	req.ID = strings.TrimSpace(req.ID)
 	name := resolveProfileName(profileHint)
