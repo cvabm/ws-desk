@@ -159,3 +159,62 @@ func TestSavedRequestsArePerHost(t *testing.T) {
 		}
 	}
 }
+
+func TestWSSavedMessagesStayOnHost(t *testing.T) {
+	dir := t.TempDir()
+	a := NewApp()
+	a.baseDir = dir
+	if err := os.MkdirAll(filepath.Join(dir, "servers"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := a.SaveProfile(Profile{URL: "ws://example.com/ws", Reconnect: true}); err != nil {
+		t.Fatal(err)
+	}
+	login, err := a.SaveRequest("ws://example.com", SavedRequest{
+		Name: "login", Kind: "ws", URL: "ws://example.com/ws", Body: `{"cmd":"login","u":1}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if login.ID == "" {
+		t.Fatal("expected id")
+	}
+	if _, err := a.SaveRequest("ws://example.com/ws", SavedRequest{
+		Name: "ping", Kind: "ws", URL: "ws://example.com/ws", Body: `{"cmd":"ping"}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := a.SaveProfile(Profile{URL: "ws://example.com/ws", Body: `{"cmd":"other"}`}); err != nil {
+		t.Fatal(err)
+	}
+	got := a.GetProfiles()
+	if len(got) != 1 {
+		t.Fatalf("profiles = %d", len(got))
+	}
+	if len(got[0].Requests) != 2 {
+		t.Fatalf("requests = %d", len(got[0].Requests))
+	}
+
+	again, err := a.SaveRequest("ws://example.com", SavedRequest{
+		Name: "login", Kind: "ws", URL: "ws://example.com/ws", Body: `{"cmd":"login","u":2}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ID != login.ID {
+		t.Fatalf("upsert id %q want %q", again.ID, login.ID)
+	}
+	got = a.GetProfiles()
+	var loginBody, loginKind string
+	for _, r := range got[0].Requests {
+		if r.Name == "login" {
+			loginBody = r.Body
+			loginKind = r.Kind
+		}
+	}
+	if loginBody != `{"cmd":"login","u":2}` || loginKind != "ws" {
+		t.Fatalf("login = body %q kind %q", loginBody, loginKind)
+	}
+}

@@ -108,7 +108,9 @@ const el = {
   listTitle: $('listTitle'),
   detail: $('detail'),
   btnFill: $('btnFill'),
+  payloadWrap: $('payloadWrap'),
   payload: $('payload'),
+  sendMenu: $('sendMenu'),
   btnSend: $('btnSend'),
   btnFormat: $('btnFormat'),
   btnFormatHttp: $('btnFormatHttp'),
@@ -437,7 +439,10 @@ async function selectMsg(id) {
 }
 
 function setHistoryMode(on, label = '') {
-  if (on) closeSavedMenu();
+  if (on) {
+    closeSavedMenu();
+    closeSendMenu();
+  }
   historyMode = on;
   el.app?.classList.toggle('history', on);
   el.histBanner.classList.toggle('hidden', !on);
@@ -601,10 +606,10 @@ function applyTransportFromURL() {
 function placePayload(http) {
   if (!el.payload) return;
   if (http && el.tabBody && el.payload.parentElement !== el.tabBody) {
+    closeSendMenu();
     el.tabBody.appendChild(el.payload);
-  } else if (!http && el.composer && el.payload.parentElement !== el.composer) {
-    const before = el.composer.querySelector('.composer-actions') || el.composer.firstChild;
-    el.composer.insertBefore(el.payload, before);
+  } else if (!http && el.payloadWrap && el.payload.parentElement !== el.payloadWrap) {
+    el.payloadWrap.insertBefore(el.payload, el.sendMenu || null);
   }
 }
 
@@ -1202,7 +1207,10 @@ async function applyProfile(p) {
   if (p.name && [...(el.profile?.options || [])].some((o) => o.value === p.name)) {
     el.profile.value = p.name;
   }
-  renderSavedSelect(matchSavedId());
+  closeSavedMenu();
+  closeSendMenu();
+  if (isHTTPMode()) renderSavedSelect(matchSavedId());
+  else renderSendSelect(matchSavedWSId());
   await activateCurrent();
 }
 
@@ -1241,13 +1249,18 @@ function clearEditor() {
   loadBodyTypeFromProfile(null);
   applyTransportFromURL();
   renderRequestEditor();
+  closeSavedMenu();
+  closeSendMenu();
   renderSavedSelect('');
+  renderSendSelect('');
 }
 
 let confirmResolver = null;
 let savedSelectSig = '';
+let sendSelectSig = '';
 let activeSavedId = '';
 let savedFilterArmed = false;
+let sendFilterArmed = false;
 
 function confirmModalOpen() {
   return Boolean(el.confirmModal && !el.confirmModal.classList.contains('hidden'));
@@ -1343,6 +1356,7 @@ function validateNewURL(raw) {
 
 function openUrlModal() {
   closeSavedMenu();
+  closeSendMenu();
   if (el.urlModalTitle) el.urlModalTitle.textContent = profiles.length ? '增加地址' : '输入地址';
   if (el.urlModalInput) el.urlModalInput.value = '';
   setUrlModalError('');
@@ -1487,6 +1501,91 @@ function currentProfileRequests() {
   return Array.isArray(p?.requests) ? p.requests : [];
 }
 
+function isHTTPSaved(r) {
+  if (!r) return false;
+  if (r.kind === 'ws') return false;
+  if (r.kind === 'http') return true;
+  return HTTP_SCHEMES.has(urlScheme(r.url));
+}
+
+function isWSSaved(r) {
+  if (!r) return false;
+  if (r.kind === 'http') return false;
+  if (r.kind === 'ws') return true;
+  return !HTTP_SCHEMES.has(urlScheme(r.url));
+}
+
+function currentHTTPRequests() {
+  return currentProfileRequests().filter(isHTTPSaved);
+}
+
+function currentWSMessages() {
+  return currentProfileRequests().filter(isWSSaved);
+}
+
+function scalarMessageName(v) {
+  if (v == null) return '';
+  const t = typeof v;
+  if (t === 'string') return v.trim();
+  if (t === 'number' && Number.isFinite(v)) return String(v);
+  if (t === 'boolean') return String(v);
+  return '';
+}
+
+function firstNamedField(obj, keys) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return '';
+  for (const k of keys) {
+    const name = scalarMessageName(obj[k]);
+    if (name) return name;
+  }
+  return '';
+}
+
+function wsMessageKey(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return '';
+  try {
+    const v = JSON.parse(raw);
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      const top = firstNamedField(v, ['cmd', 'type', 'action', 'op', 'event', 'venus', 'janus', 'request']);
+      const nested = firstNamedField(v.body, ['request', 'cmd', 'type', 'action', 'op', 'event']);
+      if (top && nested && top !== nested) return `${top}/${nested}`;
+      if (nested) return nested;
+      if (top) return top;
+    }
+  } catch (_) {}
+  return raw.replace(/\s+/g, '');
+}
+
+function wsShortName(name) {
+  const n = String(name || '').trim();
+  if (!n || n.length > 40) return false;
+  if (/^[{[\/]/.test(n)) return false;
+  if (/\s/.test(n)) return false;
+  return true;
+}
+
+function oneLinePreview(text, max = 80) {
+  const s = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+  if (s.length <= max) return s;
+  return `${s.slice(0, max)}…`;
+}
+
+function wsMessageStoreName(key, text) {
+  if (wsShortName(key)) return key.slice(0, 80);
+  const preview = oneLinePreview(text, 80);
+  return preview.replace(/…$/, '') || key.slice(0, 80);
+}
+
+function wsMessageLabel(r) {
+  const name = String(r?.name || '').trim();
+  if (wsShortName(name)) return name;
+  const key = wsMessageKey(r?.body || '');
+  if (wsShortName(key)) return key;
+  return '';
+}
+
 function currentSavedRequest() {
   if (!activeSavedId) return null;
   return currentProfileRequests().find((r) => r.id === activeSavedId) || null;
@@ -1497,9 +1596,18 @@ function savedMenuOpen() {
 }
 
 function canOpenSavedMenu() {
+  if (!isHTTPMode()) return false;
   if (historyMode) return false;
   if (confirmModalOpen() || urlModalOpen() || recordModalOpen()) return false;
   if (!urlPrefix || el.url?.readOnly) return false;
+  return true;
+}
+
+function canOpenSendMenu() {
+  if (isHTTPMode()) return false;
+  if (historyMode) return false;
+  if (confirmModalOpen() || urlModalOpen() || recordModalOpen()) return false;
+  if (!profileNameFromURL(currentURL()) && !activeProfileName) return false;
   return true;
 }
 
@@ -1515,15 +1623,44 @@ function closeSavedMenu() {
   el.urlWrap?.classList.remove('open');
 }
 
+function sendMenuOpen() {
+  return Boolean(el.sendMenu && !el.sendMenu.classList.contains('hidden'));
+}
+
+function closeSendMenu() {
+  el.sendMenu?.classList.add('hidden');
+  el.sendMenu?.setAttribute('aria-hidden', 'true');
+  el.payload?.setAttribute('aria-expanded', 'false');
+  el.payloadWrap?.classList.remove('open');
+}
+
 function openSavedMenu() {
   if (!el.savedMenu || !canOpenSavedMenu()) return;
-  const reqs = currentProfileRequests();
+  const reqs = currentHTTPRequests();
   if (!reqs.length && !savedFilterKeyword()) return;
+  closeSendMenu();
   renderSavedSelect(activeSavedId);
   el.savedMenu.classList.remove('hidden');
   el.savedMenu.setAttribute('aria-hidden', 'false');
   el.url?.setAttribute('aria-expanded', 'true');
   el.urlWrap?.classList.add('open');
+}
+
+function sendFilterKeyword() {
+  if (!sendFilterArmed) return '';
+  return String(el.payload?.value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function openSendMenu() {
+  if (!el.sendMenu || !canOpenSendMenu()) return;
+  const reqs = currentWSMessages();
+  if (!reqs.length && !sendFilterKeyword()) return;
+  closeSavedMenu();
+  renderSendSelect(activeSavedId);
+  el.sendMenu.classList.remove('hidden');
+  el.sendMenu.setAttribute('aria-hidden', 'false');
+  el.payload?.setAttribute('aria-expanded', 'true');
+  el.payloadWrap?.classList.add('open');
 }
 
 function urlPathname(url) {
@@ -1554,7 +1691,13 @@ function currentRequestKey() {
 
 function matchSavedId() {
   const key = currentRequestKey();
-  return currentProfileRequests().find((r) => requestKeyFrom(r) === key)?.id || '';
+  return currentHTTPRequests().find((r) => requestKeyFrom(r) === key)?.id || '';
+}
+
+function matchSavedWSId() {
+  const key = wsMessageKey(el.payload?.value || '');
+  if (!key) return '';
+  return currentWSMessages().find((r) => wsMessageKey(r.body || '') === key)?.id || '';
 }
 
 function newRequestId() {
@@ -1568,6 +1711,7 @@ function snapshotCurrentRequest(name, id) {
   return {
     id: id || '',
     name,
+    kind: 'http',
     url: currentURL(),
     method: el.method?.value || 'GET',
     protocol: el.protocol?.value?.trim() || '',
@@ -1579,6 +1723,17 @@ function snapshotCurrentRequest(name, id) {
     bodyType: currentBodyType(),
     body: currentBody(),
     formList: cloneRows(formRows),
+  };
+}
+
+function snapshotWSMessage(name, id) {
+  return {
+    id: id || '',
+    name,
+    kind: 'ws',
+    url: currentURL(),
+    protocol: el.protocol?.value?.trim() || '',
+    body: el.payload?.value || '',
   };
 }
 
@@ -1607,6 +1762,13 @@ function applySavedRequest(req) {
   withoutSessionReset(() => applyTransportFromURL());
   syncParamsFromURL();
   renderRequestEditor();
+  return true;
+}
+
+function applySavedWSMessage(req) {
+  if (!req || !el.payload) return false;
+  el.payload.value = req.body || '';
+  lastSent = el.payload.value;
   return true;
 }
 
@@ -1659,11 +1821,29 @@ function fillHighlighted(node, text, kw) {
   if (from < raw.length) node.appendChild(document.createTextNode(raw.slice(from)));
 }
 
+function appendSavedEmpty(menu, text) {
+  const empty = document.createElement('div');
+  empty.className = 'saved-empty';
+  empty.textContent = text;
+  menu.appendChild(empty);
+}
+
+function makeSavedDelButton(label) {
+  const del = document.createElement('button');
+  del.className = 'saved-item-del';
+  del.type = 'button';
+  del.tabIndex = -1;
+  del.title = '删除';
+  del.setAttribute('aria-label', `删除 ${label}`);
+  del.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+  return del;
+}
+
 function renderSavedSelect(selectedId) {
   if (selectedId !== undefined) {
     activeSavedId = selectedId || '';
   }
-  const reqs = currentProfileRequests();
+  const reqs = currentHTTPRequests();
   if (activeSavedId && !reqs.some((r) => r.id === activeSavedId)) activeSavedId = '';
   savedSelectSig = savedSelectSignature(reqs);
   if (!el.savedMenu) return;
@@ -1671,17 +1851,11 @@ function renderSavedSelect(selectedId) {
   const shown = kw ? reqs.filter((r) => savedRequestMatches(r, kw)) : reqs;
   el.savedMenu.innerHTML = '';
   if (!reqs.length) {
-    const empty = document.createElement('div');
-    empty.className = 'saved-empty';
-    empty.textContent = '发送后会按方法 + 路径出现在这里';
-    el.savedMenu.appendChild(empty);
+    appendSavedEmpty(el.savedMenu, '发送后会按方法 + 路径出现在这里');
     return;
   }
   if (!shown.length) {
-    const empty = document.createElement('div');
-    empty.className = 'saved-empty';
-    empty.textContent = `没有匹配 “${el.url?.value?.trim() || kw}”`;
-    el.savedMenu.appendChild(empty);
+    appendSavedEmpty(el.savedMenu, `没有匹配 “${el.url?.value?.trim() || kw}”`);
     return;
   }
   for (const r of shown) {
@@ -1690,48 +1864,101 @@ function renderSavedSelect(selectedId) {
     item.dataset.id = r.id;
     item.setAttribute('role', 'option');
     item.setAttribute('aria-selected', r.id === activeSavedId ? 'true' : 'false');
-    const http = HTTP_SCHEMES.has(urlScheme(r.url));
-    const method = http ? String(r.method || 'GET').toUpperCase() : '';
+    const method = String(r.method || 'GET').toUpperCase();
     const path = requestItemPath(r);
-    item.title = method ? `${method} ${path}` : path;
+    item.title = `${method} ${path}`;
     const main = document.createElement('div');
     main.className = 'saved-item-main';
-    if (method) {
-      const m = document.createElement('span');
-      m.className = `saved-item-method ${method.toLowerCase()}`;
-      fillHighlighted(m, method, kw);
-      main.appendChild(m);
-    }
+    const m = document.createElement('span');
+    m.className = `saved-item-method ${method.toLowerCase()}`;
+    fillHighlighted(m, method, kw);
+    main.appendChild(m);
     const p = document.createElement('span');
     p.className = 'saved-item-path';
     fillHighlighted(p, path, kw);
     main.appendChild(p);
-    const del = document.createElement('button');
-    del.className = 'saved-item-del';
-    del.type = 'button';
-    del.tabIndex = -1;
-    del.title = '删除';
-    del.setAttribute('aria-label', `删除 ${item.title}`);
-    del.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
     item.appendChild(main);
-    item.appendChild(del);
+    item.appendChild(makeSavedDelButton(item.title));
     el.savedMenu.appendChild(item);
+  }
+}
+
+function savedWSHaystack(r) {
+  return `${r?.name || ''} ${r?.body || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function savedWSMatches(r, kw) {
+  if (!kw) return true;
+  return savedWSHaystack(r).includes(kw);
+}
+
+function renderSendSelect(selectedId) {
+  if (selectedId !== undefined) {
+    activeSavedId = selectedId || '';
+  }
+  const reqs = currentWSMessages();
+  if (activeSavedId && !reqs.some((r) => r.id === activeSavedId)) activeSavedId = '';
+  sendSelectSig = savedSelectSignature(reqs);
+  if (!el.sendMenu) return;
+  const kw = sendFilterKeyword();
+  const shown = kw ? reqs.filter((r) => savedWSMatches(r, kw)) : reqs;
+  el.sendMenu.innerHTML = '';
+  if (!reqs.length) {
+    appendSavedEmpty(el.sendMenu, '发送后会按 cmd / type / request 出现在这里');
+    return;
+  }
+  if (!shown.length) {
+    appendSavedEmpty(el.sendMenu, `没有匹配 “${oneLinePreview(el.payload?.value, 24) || kw}”`);
+    return;
+  }
+  for (const r of shown) {
+    const item = document.createElement('div');
+    item.className = 'saved-item' + (r.id === activeSavedId ? ' on' : '');
+    item.dataset.id = r.id;
+    item.setAttribute('role', 'option');
+    item.setAttribute('aria-selected', r.id === activeSavedId ? 'true' : 'false');
+    const label = wsMessageLabel(r);
+    const preview = oneLinePreview(r.body || r.name || '', 96);
+    item.title = label && preview && !preview.startsWith(label) ? `${label}  ${preview}` : (preview || label);
+    const main = document.createElement('div');
+    main.className = 'saved-item-main';
+    if (label) {
+      const n = document.createElement('span');
+      n.className = 'saved-item-cmd';
+      fillHighlighted(n, label, kw);
+      main.appendChild(n);
+    }
+    if (preview) {
+      const p = document.createElement('span');
+      p.className = 'saved-item-preview';
+      fillHighlighted(p, preview, kw);
+      main.appendChild(p);
+    }
+    item.appendChild(main);
+    item.appendChild(makeSavedDelButton(item.title));
+    el.sendMenu.appendChild(item);
   }
 }
 
 function syncSavedSelect(selectedId) {
   if (selectedId !== undefined) activeSavedId = selectedId || '';
-  const reqs = currentProfileRequests();
+  const reqs = currentHTTPRequests();
   if (savedSelectSignature(reqs) !== savedSelectSig || savedMenuOpen()) {
     renderSavedSelect(activeSavedId);
-    return;
+  }
+}
+
+function syncSendSelect(selectedId) {
+  if (selectedId !== undefined) activeSavedId = selectedId || '';
+  const reqs = currentWSMessages();
+  if (savedSelectSignature(reqs) !== sendSelectSig || sendMenuOpen()) {
+    renderSendSelect(activeSavedId);
   }
 }
 
 function upsertCurrentSavedRequest() {
   const host = profileNameFromURL(currentURL());
   if (!host) return '';
-  const key = currentRequestKey();
   let p = currentProfile();
   if (!p) {
     p = { name: host, url: currentURL(), requests: [] };
@@ -1739,9 +1966,21 @@ function upsertCurrentSavedRequest() {
     profiles.sort((a, b) => String(a.name).localeCompare(String(b.name)));
   }
   const list = Array.isArray(p.requests) ? p.requests.slice() : [];
-  let i = list.findIndex((r) => requestKeyFrom(r) === key);
-  if (i < 0) i = list.findIndex((r) => r.name === key);
-  const req = snapshotCurrentRequest(key, i >= 0 ? list[i].id : newRequestId());
+  if (isHTTPMode()) {
+    const key = currentRequestKey();
+    let i = list.findIndex((r) => isHTTPSaved(r) && requestKeyFrom(r) === key);
+    if (i < 0) i = list.findIndex((r) => isHTTPSaved(r) && r.name === key);
+    const req = snapshotCurrentRequest(key, i >= 0 ? list[i].id : newRequestId());
+    if (i >= 0) list[i] = req;
+    else list.push(req);
+    p.requests = list;
+    return req.id;
+  }
+  const text = el.payload?.value || '';
+  const key = wsMessageKey(text);
+  if (!key) return '';
+  let i = list.findIndex((r) => isWSSaved(r) && wsMessageKey(r.body || '') === key);
+  const req = snapshotWSMessage(wsMessageStoreName(key, text), i >= 0 ? list[i].id : newRequestId());
   if (i >= 0) list[i] = req;
   else list.push(req);
   p.requests = list;
@@ -1751,15 +1990,19 @@ function upsertCurrentSavedRequest() {
 async function deleteNamedRequest(id) {
   const req = currentProfileRequests().find((r) => r.id === id);
   if (!req?.id) return;
-  const wasOpen = savedMenuOpen();
+  const httpOpen = savedMenuOpen();
+  const wsOpen = sendMenuOpen();
   closeSavedMenu();
+  closeSendMenu();
+  const ws = isWSSaved(req);
   const ok = await askConfirm({
-    title: '删除请求',
+    title: ws ? '删除发送' : '删除请求',
     message: `确定删除「${req.name}」？此操作不可恢复。`,
     okText: '删除',
   });
   if (!ok) {
-    if (wasOpen) openSavedMenu();
+    if (httpOpen) openSavedMenu();
+    if (wsOpen) openSendMenu();
     return;
   }
   const name = profileNameFromURL(currentURL()) || activeProfileName;
@@ -1773,20 +2016,35 @@ async function deleteNamedRequest(id) {
   const p = currentProfile();
   if (p) p.requests = currentProfileRequests().filter((r) => r.id !== req.id);
   if (activeSavedId === req.id) activeSavedId = '';
-  renderSavedSelect(activeSavedId);
-  if (wasOpen && canOpenSavedMenu()) {
+  if (ws) renderSendSelect(activeSavedId);
+  else renderSavedSelect(activeSavedId);
+  if (httpOpen && canOpenSavedMenu()) {
     openSavedMenu();
     el.url?.focus();
+  } else if (wsOpen && canOpenSendMenu()) {
+    openSendMenu();
+    el.payload?.focus();
   }
 }
 
 async function pickSavedRequest(id) {
-  const req = currentProfileRequests().find((r) => r.id === id);
+  const req = currentHTTPRequests().find((r) => r.id === id);
   if (!req) return;
   applySavedRequest(req);
   activeSavedId = req.id;
   closeSavedMenu();
   renderSavedSelect(req.id);
+  await persistProfile();
+}
+
+async function pickSavedWSMessage(id) {
+  const req = currentWSMessages().find((r) => r.id === id);
+  if (!req) return;
+  applySavedWSMessage(req);
+  activeSavedId = req.id;
+  sendFilterArmed = false;
+  closeSendMenu();
+  renderSendSelect(req.id);
   await persistProfile();
 }
 
@@ -1801,6 +2059,19 @@ function onSavedMenuClick(e) {
   }
   const item = e.target?.closest?.('.saved-item');
   if (item?.dataset?.id) pickSavedRequest(item.dataset.id);
+}
+
+function onSendMenuClick(e) {
+  const del = e.target?.closest?.('.saved-item-del');
+  if (del) {
+    e.preventDefault();
+    e.stopPropagation();
+    const id = del.closest('.saved-item')?.dataset?.id;
+    if (id) deleteNamedRequest(id);
+    return;
+  }
+  const item = e.target?.closest?.('.saved-item');
+  if (item?.dataset?.id) pickSavedWSMessage(item.dataset.id);
 }
 
 async function persistProfile(selectName) {
@@ -1896,7 +2167,8 @@ async function sendMsg() {
     if (historyMode) await exitHistoryMode();
     const savedId = upsertCurrentSavedRequest();
     await persistProfile();
-    syncSavedSelect(savedId);
+    if (http) syncSavedSelect(savedId);
+    else syncSendSelect(savedId);
     if (http) {
       const ex = await RequestHTTP(opts, text);
       if (ex) {
@@ -1960,6 +2232,8 @@ function applyRecordDraftToForm() {
 }
 
 function openRecordModal() {
+  closeSavedMenu();
+  closeSendMenu();
   const http = isHTTPMode();
   if (el.recordTitle) el.recordTitle.textContent = http ? '手动记录 HTTP' : '手动记录 WebSocket';
   if (el.recordHint) {
@@ -2202,6 +2476,7 @@ async function init() {
 
   el.profile.addEventListener('change', async () => {
     closeSavedMenu();
+    closeSendMenu();
     const nextName = el.profile.value;
     clearTimeout(persistTimer);
     await persistProfile(nextName);
@@ -2213,10 +2488,17 @@ async function init() {
     if (e.target?.closest?.('.saved-item-del')) e.preventDefault();
   });
   el.savedMenu?.addEventListener('click', onSavedMenuClick);
+  el.sendMenu?.addEventListener('mousedown', (e) => {
+    if (e.target?.closest?.('.saved-item-del')) e.preventDefault();
+  });
+  el.sendMenu?.addEventListener('click', onSendMenuClick);
   document.addEventListener('mousedown', (e) => {
-    if (!savedMenuOpen()) return;
-    if (el.savedMenu?.contains(e.target) || e.target === el.url) return;
-    closeSavedMenu();
+    if (savedMenuOpen() && !el.savedMenu?.contains(e.target) && e.target !== el.url) {
+      closeSavedMenu();
+    }
+    if (sendMenuOpen() && !el.sendMenu?.contains(e.target) && e.target !== el.payload) {
+      closeSendMenu();
+    }
   });
 
   el.btnToggle.addEventListener('click', toggleConn);
@@ -2326,7 +2608,18 @@ async function init() {
   el.btnFmtRecReq?.addEventListener('click', () => formatRecordField(el.recReqBody));
   el.btnFmtRecRes?.addEventListener('click', () => formatRecordField(el.recResBody));
 
-  el.payload.addEventListener('input', schedulePersist);
+  el.payload.addEventListener('focus', () => {
+    if (!canOpenSendMenu()) return;
+    sendFilterArmed = false;
+    openSendMenu();
+  });
+  el.payload.addEventListener('input', () => {
+    schedulePersist();
+    if (!canOpenSendMenu()) return;
+    sendFilterArmed = true;
+    if (currentWSMessages().length) openSendMenu();
+    else closeSendMenu();
+  });
   el.payload.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
@@ -2350,6 +2643,10 @@ async function init() {
     }
     if (savedMenuOpen()) {
       closeSavedMenu();
+      return;
+    }
+    if (sendMenuOpen()) {
+      closeSendMenu();
       return;
     }
     if (recordModalOpen()) {
@@ -2386,7 +2683,7 @@ async function init() {
     if (isHTTPMode()) syncParamsFromURL();
     if (!canOpenSavedMenu()) return;
     savedFilterArmed = true;
-    if (currentProfileRequests().length) openSavedMenu();
+    if (currentHTTPRequests().length) openSavedMenu();
   });
   el.protocol.addEventListener('change', persistProfile);
   el.method.addEventListener('change', persistProfile);

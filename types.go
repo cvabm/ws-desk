@@ -35,6 +35,7 @@ type Profile struct {
 type SavedRequest struct {
 	ID         string       `json:"id"`
 	Name       string       `json:"name"`
+	Kind       string       `json:"kind,omitempty"` // http | ws
 	URL        string       `json:"url"`
 	Method     string       `json:"method,omitempty"`
 	Protocol   string       `json:"protocol,omitempty"`
