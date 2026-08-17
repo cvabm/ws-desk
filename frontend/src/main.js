@@ -90,6 +90,9 @@ const el = {
   btnRecord: $('btnRecord'),
   state: $('state'),
   reqBuilder: $('reqBuilder'),
+  reqMeta: $('reqMeta'),
+  reqTitle: $('reqTitle'),
+  reqDesc: $('reqDesc'),
   reqTabs: $('reqTabs'),
   tabParams: $('tabParams'),
   tabHeaders: $('tabHeaders'),
@@ -613,6 +616,15 @@ function placePayload(http) {
   }
 }
 
+function placeReqMeta(http) {
+  if (!el.reqMeta) return;
+  if (http && el.reqBuilder && el.reqMeta.parentElement !== el.reqBuilder) {
+    el.reqBuilder.insertBefore(el.reqMeta, el.reqBuilder.firstChild);
+  } else if (!http && el.composer && el.reqMeta.parentElement !== el.composer) {
+    el.composer.insertBefore(el.reqMeta, el.composer.firstChild);
+  }
+}
+
 function applyTransportUI(scheme) {
   if (!ALL_SCHEMES.has(scheme)) return;
   const http = HTTP_SCHEMES.has(scheme);
@@ -635,6 +647,7 @@ function applyTransportUI(scheme) {
   el.reqPane?.classList.toggle('hidden', historyMode || !http);
   el.composer?.classList.toggle('hidden', historyMode);
   placePayload(http);
+  placeReqMeta(http);
   if (el.detailTitle) el.detailTitle.textContent = http ? '响应' : '详情';
   if (!historyMode) refreshFilterTitle();
   if (http && modeChanged) {
@@ -1211,6 +1224,7 @@ async function applyProfile(p) {
   closeSendMenu();
   if (isHTTPMode()) renderSavedSelect(matchSavedId());
   else renderSendSelect(matchSavedWSId());
+  loadReqMeta(currentSavedRequest());
   await activateCurrent();
 }
 
@@ -1253,6 +1267,7 @@ function clearEditor() {
   closeSendMenu();
   renderSavedSelect('');
   renderSendSelect('');
+  loadReqMeta(null);
 }
 
 let confirmResolver = null;
@@ -1578,12 +1593,72 @@ function wsMessageStoreName(key, text) {
   return preview.replace(/…$/, '') || key.slice(0, 80);
 }
 
-function wsMessageLabel(r) {
-  const name = String(r?.name || '').trim();
-  if (wsShortName(name)) return name;
+function wsCmdLabel(r) {
   const key = wsMessageKey(r?.body || '');
-  if (wsShortName(key)) return key;
-  return '';
+  return wsShortName(key) ? key : '';
+}
+
+function looksLikeHTTPKey(name) {
+  return /^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+\S/i.test(String(name || ''));
+}
+
+function requestDisplayTitle(r) {
+  const t = String(r?.title || '').trim();
+  if (t) return t;
+  const n = String(r?.name || '').trim();
+  if (!n) return '';
+  if (isHTTPSaved(r) && looksLikeHTTPKey(n)) return '';
+  if (isWSSaved(r)) {
+    if (!wsShortName(n)) return '';
+    if (n === wsMessageKey(r.body || '')) return '';
+  }
+  return n;
+}
+
+function requestDescription(r) {
+  return String(r?.description || '').trim();
+}
+
+function currentReqTitle() {
+  return String(el.reqTitle?.value || '').trim();
+}
+
+function currentReqDesc() {
+  return String(el.reqDesc?.value || '').trim();
+}
+
+function loadReqMeta(req) {
+  if (el.reqTitle) el.reqTitle.value = req?.title || '';
+  if (el.reqDesc) el.reqDesc.value = req?.description || '';
+}
+
+function flushReqMeta() {
+  const req = currentSavedRequest();
+  if (!req) return;
+  req.title = currentReqTitle();
+  req.description = currentReqDesc();
+}
+
+function rematchSavedFromEditor() {
+  const id = isHTTPMode() ? matchSavedId() : matchSavedWSId();
+  if (id === activeSavedId) return;
+  flushReqMeta();
+  activeSavedId = id || '';
+  loadReqMeta(currentSavedRequest());
+}
+
+function onReqMetaInput() {
+  const req = currentSavedRequest();
+  if (req) {
+    req.title = currentReqTitle();
+    req.description = currentReqDesc();
+    if (isHTTPMode()) {
+      if (savedMenuOpen()) renderSavedSelect();
+    } else if (sendMenuOpen()) {
+      renderSendSelect();
+    }
+  }
+  schedulePersist();
 }
 
 function currentSavedRequest() {
@@ -1636,6 +1711,7 @@ function closeSendMenu() {
 
 function openSavedMenu() {
   if (!el.savedMenu || !canOpenSavedMenu()) return;
+  flushReqMeta();
   const reqs = currentHTTPRequests();
   if (!reqs.length && !savedFilterKeyword()) return;
   closeSendMenu();
@@ -1653,6 +1729,7 @@ function sendFilterKeyword() {
 
 function openSendMenu() {
   if (!el.sendMenu || !canOpenSendMenu()) return;
+  flushReqMeta();
   const reqs = currentWSMessages();
   if (!reqs.length && !sendFilterKeyword()) return;
   closeSavedMenu();
@@ -1708,9 +1785,12 @@ function newRequestId() {
 }
 
 function snapshotCurrentRequest(name, id) {
+  const prev = id ? currentProfileRequests().find((r) => r.id === id) : null;
   return {
     id: id || '',
     name,
+    title: currentReqTitle() || prev?.title || '',
+    description: currentReqDesc() || prev?.description || '',
     kind: 'http',
     url: currentURL(),
     method: el.method?.value || 'GET',
@@ -1727,9 +1807,12 @@ function snapshotCurrentRequest(name, id) {
 }
 
 function snapshotWSMessage(name, id) {
+  const prev = id ? currentProfileRequests().find((r) => r.id === id) : null;
   return {
     id: id || '',
     name,
+    title: currentReqTitle() || prev?.title || '',
+    description: currentReqDesc() || prev?.description || '',
     kind: 'ws',
     url: currentURL(),
     protocol: el.protocol?.value?.trim() || '',
@@ -1762,6 +1845,7 @@ function applySavedRequest(req) {
   withoutSessionReset(() => applyTransportFromURL());
   syncParamsFromURL();
   renderRequestEditor();
+  loadReqMeta(req);
   return true;
 }
 
@@ -1769,11 +1853,12 @@ function applySavedWSMessage(req) {
   if (!req || !el.payload) return false;
   el.payload.value = req.body || '';
   lastSent = el.payload.value;
+  loadReqMeta(req);
   return true;
 }
 
 function savedSelectSignature(reqs) {
-  return (reqs || []).map((r) => `${r.id}\t${r.name || ''}`).join('\n');
+  return (reqs || []).map((r) => `${r.id}\t${r.name || ''}\t${r.title || ''}\t${r.description || ''}`).join('\n');
 }
 
 function requestItemPath(r) {
@@ -1785,7 +1870,7 @@ function savedRequestHaystack(r) {
   const http = HTTP_SCHEMES.has(urlScheme(r?.url));
   const method = http ? String(r?.method || 'GET').toUpperCase() : '';
   const path = requestItemPath(r);
-  return `${method} ${path} ${r?.name || ''} ${r?.url || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
+  return `${method} ${path} ${r?.name || ''} ${r?.title || ''} ${r?.description || ''} ${r?.url || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
 function savedRequestMatches(r, kw) {
@@ -1866,25 +1951,39 @@ function renderSavedSelect(selectedId) {
     item.setAttribute('aria-selected', r.id === activeSavedId ? 'true' : 'false');
     const method = String(r.method || 'GET').toUpperCase();
     const path = requestItemPath(r);
-    item.title = `${method} ${path}`;
+    const title = requestDisplayTitle(r);
+    const desc = requestDescription(r);
+    item.title = [title, `${method} ${path}`, desc].filter(Boolean).join('\n');
     const main = document.createElement('div');
     main.className = 'saved-item-main';
+    const line = document.createElement('div');
+    line.className = 'saved-item-line';
     const m = document.createElement('span');
     m.className = `saved-item-method ${method.toLowerCase()}`;
     fillHighlighted(m, method, kw);
-    main.appendChild(m);
-    const p = document.createElement('span');
-    p.className = 'saved-item-path';
-    fillHighlighted(p, path, kw);
-    main.appendChild(p);
+    line.appendChild(m);
+    const head = document.createElement('span');
+    head.className = title ? 'saved-item-title' : 'saved-item-path';
+    fillHighlighted(head, title || path, kw);
+    line.appendChild(head);
+    main.appendChild(line);
+    const subParts = [];
+    if (title) subParts.push(path);
+    if (desc) subParts.push(desc);
+    if (subParts.length) {
+      const sub = document.createElement('div');
+      sub.className = 'saved-item-sub';
+      fillHighlighted(sub, subParts.join(' · '), kw);
+      main.appendChild(sub);
+    }
     item.appendChild(main);
-    item.appendChild(makeSavedDelButton(item.title));
+    item.appendChild(makeSavedDelButton(title || `${method} ${path}`));
     el.savedMenu.appendChild(item);
   }
 }
 
 function savedWSHaystack(r) {
-  return `${r?.name || ''} ${r?.body || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
+  return `${r?.name || ''} ${r?.title || ''} ${r?.description || ''} ${r?.body || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
 function savedWSMatches(r, kw) {
@@ -1917,25 +2016,41 @@ function renderSendSelect(selectedId) {
     item.dataset.id = r.id;
     item.setAttribute('role', 'option');
     item.setAttribute('aria-selected', r.id === activeSavedId ? 'true' : 'false');
-    const label = wsMessageLabel(r);
+    const title = requestDisplayTitle(r);
+    const cmd = wsCmdLabel(r);
     const preview = oneLinePreview(r.body || r.name || '', 96);
-    item.title = label && preview && !preview.startsWith(label) ? `${label}  ${preview}` : (preview || label);
+    const desc = requestDescription(r);
+    const tip = [title, cmd, preview, desc].filter(Boolean).join('\n');
+    item.title = tip;
     const main = document.createElement('div');
     main.className = 'saved-item-main';
-    if (label) {
+    const line = document.createElement('div');
+    line.className = 'saved-item-line';
+    const headText = title || cmd || preview;
+    if (headText) {
       const n = document.createElement('span');
-      n.className = 'saved-item-cmd';
-      fillHighlighted(n, label, kw);
-      main.appendChild(n);
+      n.className = title ? 'saved-item-title' : 'saved-item-cmd';
+      fillHighlighted(n, headText, kw);
+      line.appendChild(n);
     }
-    if (preview) {
-      const p = document.createElement('span');
-      p.className = 'saved-item-preview';
-      fillHighlighted(p, preview, kw);
-      main.appendChild(p);
+    if (title && cmd && cmd !== title) {
+      const c = document.createElement('span');
+      c.className = 'saved-item-cmd';
+      fillHighlighted(c, cmd, kw);
+      line.appendChild(c);
+    }
+    if (line.childNodes.length) main.appendChild(line);
+    const subParts = [];
+    if (preview && preview !== headText) subParts.push(preview);
+    if (desc) subParts.push(desc);
+    if (subParts.length) {
+      const sub = document.createElement('div');
+      sub.className = 'saved-item-sub';
+      fillHighlighted(sub, subParts.join(' · '), kw);
+      main.appendChild(sub);
     }
     item.appendChild(main);
-    item.appendChild(makeSavedDelButton(item.title));
+    item.appendChild(makeSavedDelButton(title || cmd || preview));
     el.sendMenu.appendChild(item);
   }
 }
@@ -1995,9 +2110,10 @@ async function deleteNamedRequest(id) {
   closeSavedMenu();
   closeSendMenu();
   const ws = isWSSaved(req);
+  const label = requestDisplayTitle(req) || req.name;
   const ok = await askConfirm({
     title: ws ? '删除发送' : '删除请求',
-    message: `确定删除「${req.name}」？此操作不可恢复。`,
+    message: `确定删除「${label}」？此操作不可恢复。`,
     okText: '删除',
   });
   if (!ok) {
@@ -2015,7 +2131,10 @@ async function deleteNamedRequest(id) {
   }
   const p = currentProfile();
   if (p) p.requests = currentProfileRequests().filter((r) => r.id !== req.id);
-  if (activeSavedId === req.id) activeSavedId = '';
+  if (activeSavedId === req.id) {
+    activeSavedId = '';
+    loadReqMeta(null);
+  }
   if (ws) renderSendSelect(activeSavedId);
   else renderSavedSelect(activeSavedId);
   if (httpOpen && canOpenSavedMenu()) {
@@ -2076,6 +2195,7 @@ function onSendMenuClick(e) {
 
 async function persistProfile(selectName) {
   if (typeof selectName !== 'string') selectName = '';
+  flushReqMeta();
   const url = currentURL();
   const name = profileNameFromURL(url);
   if (!name) return;
@@ -2169,6 +2289,7 @@ async function sendMsg() {
     await persistProfile();
     if (http) syncSavedSelect(savedId);
     else syncSendSelect(savedId);
+    if (savedId) loadReqMeta(currentSavedRequest());
     if (http) {
       const ex = await RequestHTTP(opts, text);
       if (ex) {
@@ -2675,6 +2796,7 @@ async function init() {
     normalizeURLPathInput();
     applyTransportFromURL();
     syncParamsFromURL();
+    rematchSavedFromEditor();
     await activateCurrent();
     await persistProfile();
   });
@@ -2686,8 +2808,13 @@ async function init() {
     if (currentHTTPRequests().length) openSavedMenu();
   });
   el.protocol.addEventListener('change', persistProfile);
-  el.method.addEventListener('change', persistProfile);
+  el.method.addEventListener('change', () => {
+    rematchSavedFromEditor();
+    persistProfile();
+  });
   el.reconnect.addEventListener('change', persistProfile);
+  el.reqTitle?.addEventListener('input', onReqMetaInput);
+  el.reqDesc?.addEventListener('input', onReqMetaInput);
 
   EventsOn('message', (m) => {
     if (historyMode) return;

@@ -218,3 +218,59 @@ func TestWSSavedMessagesStayOnHost(t *testing.T) {
 		t.Fatalf("login = body %q kind %q", loginBody, loginKind)
 	}
 }
+
+func TestSavedRequestKeepsTitleAndDescription(t *testing.T) {
+	dir := t.TempDir()
+	a := NewApp()
+	a.baseDir = dir
+	if err := os.MkdirAll(filepath.Join(dir, "servers"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	httpReq, err := a.SaveRequest("https://example.com", SavedRequest{
+		Name: "POST /login", Title: "登录", Description: "手机号密码",
+		URL: "https://example.com/login", Method: "POST", Body: `{"u":1}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if httpReq.Title != "登录" || httpReq.Description != "手机号密码" {
+		t.Fatalf("http = title %q desc %q", httpReq.Title, httpReq.Description)
+	}
+
+	wsReq, err := a.SaveRequest("ws://example.com", SavedRequest{
+		Name: "login", Title: "进房", Description: "带房间号",
+		Kind: "ws", URL: "ws://example.com/ws", Body: `{"cmd":"login","room":1}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wsReq.Title != "进房" || wsReq.Description != "带房间号" {
+		t.Fatalf("ws = title %q desc %q", wsReq.Title, wsReq.Description)
+	}
+
+	again, err := a.SaveRequest("https://example.com", SavedRequest{
+		ID: httpReq.ID, Name: "POST /login", Title: "登录v2", Description: "验证码登录",
+		URL: "https://example.com/login", Method: "POST", Body: `{"u":2}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ID != httpReq.ID {
+		t.Fatalf("upsert id %q want %q", again.ID, httpReq.ID)
+	}
+
+	got := a.GetProfiles()
+	var title, desc string
+	for _, p := range got {
+		for _, r := range p.Requests {
+			if r.ID == httpReq.ID {
+				title = r.Title
+				desc = r.Description
+			}
+		}
+	}
+	if title != "登录v2" || desc != "验证码登录" {
+		t.Fatalf("updated http = title %q desc %q", title, desc)
+	}
+}

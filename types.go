@@ -33,20 +33,22 @@ type Profile struct {
 
 // SavedRequest is a named request bookmark on one host profile.
 type SavedRequest struct {
-	ID         string       `json:"id"`
-	Name       string       `json:"name"`
-	Kind       string       `json:"kind,omitempty"` // http | ws
-	URL        string       `json:"url"`
-	Method     string       `json:"method,omitempty"`
-	Protocol   string       `json:"protocol,omitempty"`
-	HeaderList []HeaderItem `json:"headerList,omitempty"`
-	AuthType   string       `json:"authType,omitempty"`
-	AuthToken  string       `json:"authToken,omitempty"`
-	AuthUser   string       `json:"authUser,omitempty"`
-	AuthPass   string       `json:"authPass,omitempty"`
-	BodyType   string       `json:"bodyType,omitempty"`
-	Body       string       `json:"body,omitempty"`
-	FormList   []HeaderItem `json:"formList,omitempty"`
+	ID          string       `json:"id"`
+	Name        string       `json:"name"`
+	Title       string       `json:"title,omitempty"`
+	Description string       `json:"description,omitempty"`
+	Kind        string       `json:"kind,omitempty"` // http | ws
+	URL         string       `json:"url"`
+	Method      string       `json:"method,omitempty"`
+	Protocol    string       `json:"protocol,omitempty"`
+	HeaderList  []HeaderItem `json:"headerList,omitempty"`
+	AuthType    string       `json:"authType,omitempty"`
+	AuthToken   string       `json:"authToken,omitempty"`
+	AuthUser    string       `json:"authUser,omitempty"`
+	AuthPass    string       `json:"authPass,omitempty"`
+	BodyType    string       `json:"bodyType,omitempty"`
+	Body        string       `json:"body,omitempty"`
+	FormList    []HeaderItem `json:"formList,omitempty"`
 }
 
 // ConnectOptions is used by the UI to open a connection.

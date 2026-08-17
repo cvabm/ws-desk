@@ -147,6 +147,8 @@ export namespace main {
 	export class SavedRequest {
 	    id: string;
 	    name: string;
+	    title?: string;
+	    description?: string;
 	    kind?: string;
 	    url: string;
 	    method?: string;
@@ -168,6 +170,8 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
 	        this.name = source["name"];
+	        this.title = source["title"];
+	        this.description = source["description"];
 	        this.kind = source["kind"];
 	        this.url = source["url"];
 	        this.method = source["method"];

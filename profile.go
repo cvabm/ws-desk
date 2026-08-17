@@ -308,14 +308,25 @@ func upsertSavedRequest(list []SavedRequest, req SavedRequest) ([]SavedRequest, 
 	return append(list, req), req
 }
 
+func clipRunes(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if max <= 0 {
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max])
+}
+
 func (a *App) saveRequestOnProfile(profileHint string, req SavedRequest) (SavedRequest, error) {
-	req.Name = strings.TrimSpace(req.Name)
+	req.Name = clipRunes(req.Name, 80)
 	if req.Name == "" {
 		return SavedRequest{}, fmt.Errorf("name is required")
 	}
-	if runes := []rune(req.Name); len(runes) > 80 {
-		req.Name = string(runes[:80])
-	}
+	req.Title = clipRunes(req.Title, 80)
+	req.Description = clipRunes(req.Description, 200)
 	req.URL = strings.TrimSpace(req.URL)
 	req.ID = strings.TrimSpace(req.ID)
 	name := resolveProfileName(profileHint)
