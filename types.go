@@ -27,6 +27,25 @@ type Profile struct {
 	PingSec      int               `json:"pingSec"`
 	// NoFollowRedirects keeps HTTP 3xx as the response (API-tester default is to follow).
 	NoFollowRedirects bool `json:"noFollowRedirects,omitempty"`
+	// Requests are named snapshots under this host. Variables stay on the profile.
+	Requests []SavedRequest `json:"requests,omitempty"`
+}
+
+// SavedRequest is a named request bookmark on one host profile.
+type SavedRequest struct {
+	ID         string       `json:"id"`
+	Name       string       `json:"name"`
+	URL        string       `json:"url"`
+	Method     string       `json:"method,omitempty"`
+	Protocol   string       `json:"protocol,omitempty"`
+	HeaderList []HeaderItem `json:"headerList,omitempty"`
+	AuthType   string       `json:"authType,omitempty"`
+	AuthToken  string       `json:"authToken,omitempty"`
+	AuthUser   string       `json:"authUser,omitempty"`
+	AuthPass   string       `json:"authPass,omitempty"`
+	BodyType   string       `json:"bodyType,omitempty"`
+	Body       string       `json:"body,omitempty"`
+	FormList   []HeaderItem `json:"formList,omitempty"`
 }
 
 // ConnectOptions is used by the UI to open a connection.
@@ -51,6 +70,8 @@ type Msg struct {
 	Exchange *HTTPExchange `json:"exchange,omitempty"`
 	WS       *WSRecord     `json:"ws,omitempty"`
 	Profile  string        `json:"profile,omitempty"`
+	// Slim means bodies were clipped for the list; call LoadSessionMessage for the full row.
+	Slim bool `json:"slim,omitempty"`
 }
 
 // WSRecord is a manually saved WebSocket send/receive pair.

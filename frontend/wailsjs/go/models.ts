@@ -106,6 +106,7 @@ export namespace main {
 	    exchange?: HTTPExchange;
 	    ws?: WSRecord;
 	    profile?: string;
+	    slim?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Msg(source);
@@ -122,6 +123,61 @@ export namespace main {
 	        this.exchange = this.convertValues(source["exchange"], HTTPExchange);
 	        this.ws = this.convertValues(source["ws"], WSRecord);
 	        this.profile = source["profile"];
+	        this.slim = source["slim"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class SavedRequest {
+	    id: string;
+	    name: string;
+	    url: string;
+	    method?: string;
+	    protocol?: string;
+	    headerList?: HeaderItem[];
+	    authType?: string;
+	    authToken?: string;
+	    authUser?: string;
+	    authPass?: string;
+	    bodyType?: string;
+	    body?: string;
+	    formList?: HeaderItem[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SavedRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.url = source["url"];
+	        this.method = source["method"];
+	        this.protocol = source["protocol"];
+	        this.headerList = this.convertValues(source["headerList"], HeaderItem);
+	        this.authType = source["authType"];
+	        this.authToken = source["authToken"];
+	        this.authUser = source["authUser"];
+	        this.authPass = source["authPass"];
+	        this.bodyType = source["bodyType"];
+	        this.body = source["body"];
+	        this.formList = this.convertValues(source["formList"], HeaderItem);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -160,6 +216,7 @@ export namespace main {
 	    reconnect: boolean;
 	    pingSec: number;
 	    noFollowRedirects?: boolean;
+	    requests?: SavedRequest[];
 	
 	    static createFrom(source: any = {}) {
 	        return new Profile(source);
@@ -184,6 +241,7 @@ export namespace main {
 	        this.reconnect = source["reconnect"];
 	        this.pingSec = source["pingSec"];
 	        this.noFollowRedirects = source["noFollowRedirects"];
+	        this.requests = this.convertValues(source["requests"], SavedRequest);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -204,6 +262,7 @@ export namespace main {
 		    return a;
 		}
 	}
+	
 	export class SessionInfo {
 	    name: string;
 	    path: string;

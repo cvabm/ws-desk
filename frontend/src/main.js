@@ -15,9 +15,11 @@ import {
   SaveProfile,
   SelectProfile,
   DeleteProfile,
+  DeleteRequest,
   ListSessions,
   SearchSessions,
   LoadSession,
+  LoadSessionMessage,
   PickAndLoadSession,
   OpenLogDir,
   ClearCookies,
@@ -58,8 +60,10 @@ const el = {
   btnAddProfile: $('btnAddProfile'),
   btnDelProfile: $('btnDelProfile'),
   urlBox: $('urlBox'),
+  urlWrap: $('urlWrap'),
   urlPrefix: $('urlPrefix'),
   url: $('url'),
+  savedMenu: $('savedMenu'),
   urlModal: $('urlModal'),
   urlModalTitle: $('urlModalTitle'),
   urlModalInput: $('urlModalInput'),
@@ -202,7 +206,9 @@ function dirLabel(dir) {
 
 function preview(text) {
   if (!text) return '';
-  return text.replace(/\s+/g, ' ').slice(0, 160);
+  const s = String(text);
+  const head = s.length > 400 ? s.slice(0, 400) : s;
+  return head.replace(/\s+/g, ' ').slice(0, 160);
 }
 
 function timeOnly(t) {
@@ -379,12 +385,7 @@ function setDetailHtml(html) {
   el.detail.innerHTML = html;
 }
 
-function selectMsg(id) {
-  selectedId = id;
-  for (const node of el.list.children) {
-    node.classList.toggle('active', Number(node.dataset.id) === id);
-  }
-  const m = store.get(id);
+function paintMsgDetail(m) {
   if (!m) {
     setDetailEmpty('选择一条消息');
     setFillButton(false);
@@ -400,7 +401,43 @@ function selectMsg(id) {
   setFillButton(canFillFromMessage(m));
 }
 
+let selectSeq = 0;
+
+async function selectMsg(id) {
+  selectedId = id;
+  const seq = ++selectSeq;
+  for (const node of el.list.children) {
+    node.classList.toggle('active', Number(node.dataset.id) === id);
+  }
+  let m = store.get(id);
+  if (!m) {
+    setDetailEmpty('选择一条消息');
+    setFillButton(false);
+    return;
+  }
+  if (historyMode && m.slim) {
+    setDetailEmpty('加载详情…');
+    try {
+      const full = await LoadSessionMessage(id);
+      if (seq !== selectSeq || selectedId !== id) return;
+      if (full) {
+        store.set(id, full);
+        m = full;
+        const i = allHistoryMsgs.findIndex((x) => x.id === id);
+        if (i >= 0) allHistoryMsgs[i] = full;
+      }
+    } catch (e) {
+      if (seq !== selectSeq) return;
+      setDetailEmpty('加载失败: ' + e);
+      setFillButton(false);
+      return;
+    }
+  }
+  paintMsgDetail(m);
+}
+
 function setHistoryMode(on, label = '') {
+  if (on) closeSavedMenu();
   historyMode = on;
   el.app?.classList.toggle('history', on);
   el.histBanner.classList.toggle('hidden', !on);
@@ -451,7 +488,7 @@ async function exitHistoryMode() {
   await loadLiveMessages();
 }
 
-function applyMsgFilter({ selectFirst = historyMode } = {}) {
+function applyMsgFilter({ selectFirst = false } = {}) {
   const pool = currentMsgPool();
   const kw = currentFilterKw();
   const filtered = kw ? pool.filter((m) => msgMatches(m, kw)) : pool;
@@ -495,7 +532,7 @@ function showSession(detail, keyword = '') {
   } else {
     el.msgFilter.value = '';
   }
-  applyMsgFilter();
+  applyMsgFilter({ selectFirst: false });
   closeHistoryModal();
 }
 
@@ -1165,6 +1202,7 @@ async function applyProfile(p) {
   if (p.name && [...(el.profile?.options || [])].some((o) => o.value === p.name)) {
     el.profile.value = p.name;
   }
+  renderSavedSelect(matchSavedId());
   await activateCurrent();
 }
 
@@ -1203,9 +1241,13 @@ function clearEditor() {
   loadBodyTypeFromProfile(null);
   applyTransportFromURL();
   renderRequestEditor();
+  renderSavedSelect('');
 }
 
 let confirmResolver = null;
+let savedSelectSig = '';
+let activeSavedId = '';
+let savedFilterArmed = false;
 
 function confirmModalOpen() {
   return Boolean(el.confirmModal && !el.confirmModal.classList.contains('hidden'));
@@ -1300,6 +1342,7 @@ function validateNewURL(raw) {
 }
 
 function openUrlModal() {
+  closeSavedMenu();
   if (el.urlModalTitle) el.urlModalTitle.textContent = profiles.length ? '增加地址' : '输入地址';
   if (el.urlModalInput) el.urlModalInput.value = '';
   setUrlModalError('');
@@ -1433,7 +1476,335 @@ async function copyCurl(fromDetail) {
   flashButton(btn, ok ? '已复制' : '复制失败');
 }
 
+function currentProfile() {
+  const name = profileNameFromURL(currentURL()) || activeProfileName || el.profile?.value || '';
+  if (!name) return null;
+  return profiles.find((p) => p.name === name) || null;
+}
+
+function currentProfileRequests() {
+  const p = currentProfile();
+  return Array.isArray(p?.requests) ? p.requests : [];
+}
+
+function currentSavedRequest() {
+  if (!activeSavedId) return null;
+  return currentProfileRequests().find((r) => r.id === activeSavedId) || null;
+}
+
+function savedMenuOpen() {
+  return Boolean(el.savedMenu && !el.savedMenu.classList.contains('hidden'));
+}
+
+function canOpenSavedMenu() {
+  if (historyMode) return false;
+  if (confirmModalOpen() || urlModalOpen() || recordModalOpen()) return false;
+  if (!urlPrefix || el.url?.readOnly) return false;
+  return true;
+}
+
+function savedFilterKeyword() {
+  if (!savedFilterArmed) return '';
+  return String(el.url?.value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function closeSavedMenu() {
+  el.savedMenu?.classList.add('hidden');
+  el.savedMenu?.setAttribute('aria-hidden', 'true');
+  el.url?.setAttribute('aria-expanded', 'false');
+  el.urlWrap?.classList.remove('open');
+}
+
+function openSavedMenu() {
+  if (!el.savedMenu || !canOpenSavedMenu()) return;
+  const reqs = currentProfileRequests();
+  if (!reqs.length && !savedFilterKeyword()) return;
+  renderSavedSelect(activeSavedId);
+  el.savedMenu.classList.remove('hidden');
+  el.savedMenu.setAttribute('aria-hidden', 'false');
+  el.url?.setAttribute('aria-expanded', 'true');
+  el.urlWrap?.classList.add('open');
+}
+
+function urlPathname(url) {
+  let path = splitLockedURL(url).rest || '';
+  const q = path.indexOf('?');
+  if (q >= 0) path = path.slice(0, q);
+  const h = path.indexOf('#');
+  if (h >= 0) path = path.slice(0, h);
+  path = path.trim();
+  if (!path || path === '/') return '/';
+  return path.startsWith('/') ? path : `/${path}`;
+}
+
+function requestKeyFrom(req) {
+  const url = req?.url || '';
+  const path = urlPathname(url);
+  if (HTTP_SCHEMES.has(urlScheme(url))) {
+    return `${String(req?.method || 'GET').toUpperCase()} ${path}`;
+  }
+  return path;
+}
+
+function currentRequestKey() {
+  const path = urlPathname(currentURL());
+  if (isHTTPMode()) return `${(el.method?.value || 'GET').toUpperCase()} ${path}`;
+  return path;
+}
+
+function matchSavedId() {
+  const key = currentRequestKey();
+  return currentProfileRequests().find((r) => requestKeyFrom(r) === key)?.id || '';
+}
+
+function newRequestId() {
+  try {
+    if (globalThis.crypto?.randomUUID) return crypto.randomUUID();
+  } catch (_) {}
+  return `${Date.now().toString(16)}${Math.random().toString(16).slice(2, 10)}`;
+}
+
+function snapshotCurrentRequest(name, id) {
+  return {
+    id: id || '',
+    name,
+    url: currentURL(),
+    method: el.method?.value || 'GET',
+    protocol: el.protocol?.value?.trim() || '',
+    headerList: cloneRows(headerRows),
+    authType: el.authType?.value || authState.type || 'none',
+    authToken: el.authToken?.value || authState.token || '',
+    authUser: el.authUser?.value || authState.user || '',
+    authPass: el.authPass?.value || authState.pass || '',
+    bodyType: currentBodyType(),
+    body: currentBody(),
+    formList: cloneRows(formRows),
+  };
+}
+
+function applySavedRequest(req) {
+  if (!req) return false;
+  const lock = profileNameFromURL(currentURL()) || activeProfileName || '';
+  const raw = String(req.url || '').trim();
+  const reqHost = profileNameFromURL(raw);
+  if (lock && reqHost && reqHost !== lock) {
+    const rest = splitLockedURL(raw).rest;
+    setURL(rest ? lock + rest : lock, lock);
+  } else if (raw) {
+    setURL(raw, lock || reqHost);
+  }
+  if (el.protocol) el.protocol.value = req.protocol || '';
+  const method = (req.method || 'GET').toUpperCase();
+  if (el.method && [...el.method.options].some((o) => o.value === method)) {
+    el.method.value = method;
+  } else if (el.method) {
+    el.method.value = 'GET';
+  }
+  loadHeadersFromProfile(req);
+  loadAuthFromProfile(req);
+  loadBodyTypeFromProfile(req);
+  loadBodyFromProfile(req);
+  withoutSessionReset(() => applyTransportFromURL());
+  syncParamsFromURL();
+  renderRequestEditor();
+  return true;
+}
+
+function savedSelectSignature(reqs) {
+  return (reqs || []).map((r) => `${r.id}\t${r.name || ''}`).join('\n');
+}
+
+function requestItemPath(r) {
+  const rest = splitLockedURL(r?.url || '').rest;
+  return rest || urlPathname(r?.url) || '/';
+}
+
+function savedRequestHaystack(r) {
+  const http = HTTP_SCHEMES.has(urlScheme(r?.url));
+  const method = http ? String(r?.method || 'GET').toUpperCase() : '';
+  const path = requestItemPath(r);
+  return `${method} ${path} ${r?.name || ''} ${r?.url || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function savedRequestMatches(r, kw) {
+  if (!kw) return true;
+  return savedRequestHaystack(r).includes(kw);
+}
+
+function fillHighlighted(node, text, kw) {
+  node.textContent = '';
+  const raw = String(text || '');
+  const needle = String(kw || '').trim();
+  if (!needle) {
+    node.textContent = raw;
+    return;
+  }
+  const lower = raw.toLowerCase();
+  const q = needle.toLowerCase();
+  let from = 0;
+  let i = lower.indexOf(q, from);
+  if (i < 0) {
+    node.textContent = raw;
+    return;
+  }
+  while (i >= 0) {
+    if (i > from) node.appendChild(document.createTextNode(raw.slice(from, i)));
+    const mark = document.createElement('span');
+    mark.className = 'saved-hit';
+    mark.textContent = raw.slice(i, i + q.length);
+    node.appendChild(mark);
+    from = i + q.length;
+    i = lower.indexOf(q, from);
+  }
+  if (from < raw.length) node.appendChild(document.createTextNode(raw.slice(from)));
+}
+
+function renderSavedSelect(selectedId) {
+  if (selectedId !== undefined) {
+    activeSavedId = selectedId || '';
+  }
+  const reqs = currentProfileRequests();
+  if (activeSavedId && !reqs.some((r) => r.id === activeSavedId)) activeSavedId = '';
+  savedSelectSig = savedSelectSignature(reqs);
+  if (!el.savedMenu) return;
+  const kw = savedFilterKeyword();
+  const shown = kw ? reqs.filter((r) => savedRequestMatches(r, kw)) : reqs;
+  el.savedMenu.innerHTML = '';
+  if (!reqs.length) {
+    const empty = document.createElement('div');
+    empty.className = 'saved-empty';
+    empty.textContent = '发送后会按方法 + 路径出现在这里';
+    el.savedMenu.appendChild(empty);
+    return;
+  }
+  if (!shown.length) {
+    const empty = document.createElement('div');
+    empty.className = 'saved-empty';
+    empty.textContent = `没有匹配 “${el.url?.value?.trim() || kw}”`;
+    el.savedMenu.appendChild(empty);
+    return;
+  }
+  for (const r of shown) {
+    const item = document.createElement('div');
+    item.className = 'saved-item' + (r.id === activeSavedId ? ' on' : '');
+    item.dataset.id = r.id;
+    item.setAttribute('role', 'option');
+    item.setAttribute('aria-selected', r.id === activeSavedId ? 'true' : 'false');
+    const http = HTTP_SCHEMES.has(urlScheme(r.url));
+    const method = http ? String(r.method || 'GET').toUpperCase() : '';
+    const path = requestItemPath(r);
+    item.title = method ? `${method} ${path}` : path;
+    const main = document.createElement('div');
+    main.className = 'saved-item-main';
+    if (method) {
+      const m = document.createElement('span');
+      m.className = `saved-item-method ${method.toLowerCase()}`;
+      fillHighlighted(m, method, kw);
+      main.appendChild(m);
+    }
+    const p = document.createElement('span');
+    p.className = 'saved-item-path';
+    fillHighlighted(p, path, kw);
+    main.appendChild(p);
+    const del = document.createElement('button');
+    del.className = 'saved-item-del';
+    del.type = 'button';
+    del.tabIndex = -1;
+    del.title = '删除';
+    del.setAttribute('aria-label', `删除 ${item.title}`);
+    del.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+    item.appendChild(main);
+    item.appendChild(del);
+    el.savedMenu.appendChild(item);
+  }
+}
+
+function syncSavedSelect(selectedId) {
+  if (selectedId !== undefined) activeSavedId = selectedId || '';
+  const reqs = currentProfileRequests();
+  if (savedSelectSignature(reqs) !== savedSelectSig || savedMenuOpen()) {
+    renderSavedSelect(activeSavedId);
+    return;
+  }
+}
+
+function upsertCurrentSavedRequest() {
+  const host = profileNameFromURL(currentURL());
+  if (!host) return '';
+  const key = currentRequestKey();
+  let p = currentProfile();
+  if (!p) {
+    p = { name: host, url: currentURL(), requests: [] };
+    profiles.push(p);
+    profiles.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  }
+  const list = Array.isArray(p.requests) ? p.requests.slice() : [];
+  let i = list.findIndex((r) => requestKeyFrom(r) === key);
+  if (i < 0) i = list.findIndex((r) => r.name === key);
+  const req = snapshotCurrentRequest(key, i >= 0 ? list[i].id : newRequestId());
+  if (i >= 0) list[i] = req;
+  else list.push(req);
+  p.requests = list;
+  return req.id;
+}
+
+async function deleteNamedRequest(id) {
+  const req = currentProfileRequests().find((r) => r.id === id);
+  if (!req?.id) return;
+  const wasOpen = savedMenuOpen();
+  closeSavedMenu();
+  const ok = await askConfirm({
+    title: '删除请求',
+    message: `确定删除「${req.name}」？此操作不可恢复。`,
+    okText: '删除',
+  });
+  if (!ok) {
+    if (wasOpen) openSavedMenu();
+    return;
+  }
+  const name = profileNameFromURL(currentURL()) || activeProfileName;
+  if (!name) return;
+  try {
+    await DeleteRequest(name, req.id);
+  } catch (e) {
+    setDetailEmpty('删除失败: ' + e);
+    return;
+  }
+  const p = currentProfile();
+  if (p) p.requests = currentProfileRequests().filter((r) => r.id !== req.id);
+  if (activeSavedId === req.id) activeSavedId = '';
+  renderSavedSelect(activeSavedId);
+  if (wasOpen && canOpenSavedMenu()) {
+    openSavedMenu();
+    el.url?.focus();
+  }
+}
+
+async function pickSavedRequest(id) {
+  const req = currentProfileRequests().find((r) => r.id === id);
+  if (!req) return;
+  applySavedRequest(req);
+  activeSavedId = req.id;
+  closeSavedMenu();
+  renderSavedSelect(req.id);
+  await persistProfile();
+}
+
+function onSavedMenuClick(e) {
+  const del = e.target?.closest?.('.saved-item-del');
+  if (del) {
+    e.preventDefault();
+    e.stopPropagation();
+    const id = del.closest('.saved-item')?.dataset?.id;
+    if (id) deleteNamedRequest(id);
+    return;
+  }
+  const item = e.target?.closest?.('.saved-item');
+  if (item?.dataset?.id) pickSavedRequest(item.dataset.id);
+}
+
 async function persistProfile(selectName) {
+  if (typeof selectName !== 'string') selectName = '';
   const url = currentURL();
   const name = profileNameFromURL(url);
   if (!name) return;
@@ -1461,6 +1832,7 @@ async function persistProfile(selectName) {
     reconnect: el.reconnect.checked,
     pingSec: 20,
     noFollowRedirects: el.followRedirects ? !el.followRedirects.checked : false,
+    requests: currentProfileRequests(),
   };
   try {
     await SaveProfile(p);
@@ -1522,7 +1894,9 @@ async function sendMsg() {
   setBusy(true);
   try {
     if (historyMode) await exitHistoryMode();
+    const savedId = upsertCurrentSavedRequest();
     await persistProfile();
+    syncSavedSelect(savedId);
     if (http) {
       const ex = await RequestHTTP(opts, text);
       if (ex) {
@@ -1700,6 +2074,7 @@ async function recordWS() {
 
 /* —— history modal —— */
 function openHistoryModal() {
+  closeSavedMenu();
   el.histModal.classList.remove('hidden');
   el.histModal.setAttribute('aria-hidden', 'false');
   refreshHistoryList();
@@ -1826,6 +2201,7 @@ async function init() {
   }
 
   el.profile.addEventListener('change', async () => {
+    closeSavedMenu();
     const nextName = el.profile.value;
     clearTimeout(persistTimer);
     await persistProfile(nextName);
@@ -1833,6 +2209,15 @@ async function init() {
     await applyProfile(p);
   });
   el.btnDelProfile?.addEventListener('click', deleteCurrentProfile);
+  el.savedMenu?.addEventListener('mousedown', (e) => {
+    if (e.target?.closest?.('.saved-item-del')) e.preventDefault();
+  });
+  el.savedMenu?.addEventListener('click', onSavedMenuClick);
+  document.addEventListener('mousedown', (e) => {
+    if (!savedMenuOpen()) return;
+    if (el.savedMenu?.contains(e.target) || e.target === el.url) return;
+    closeSavedMenu();
+  });
 
   el.btnToggle.addEventListener('click', toggleConn);
   el.btnSend.addEventListener('click', sendMsg);
@@ -1843,6 +2228,7 @@ async function init() {
     if (fillFromMessage(m)) {
       setFillButton(true);
       flashFilled();
+      schedulePersist();
     }
   });
   el.btnCurl?.addEventListener('click', () => copyCurl(false));
@@ -1962,6 +2348,10 @@ async function init() {
       closeConfirmModal(false);
       return;
     }
+    if (savedMenuOpen()) {
+      closeSavedMenu();
+      return;
+    }
     if (recordModalOpen()) {
       closeRecordModal();
       return;
@@ -1979,6 +2369,11 @@ async function init() {
   el.url.addEventListener('click', () => {
     if (!urlPrefix) openUrlModal();
   });
+  el.url.addEventListener('focus', () => {
+    if (!canOpenSavedMenu()) return;
+    savedFilterArmed = false;
+    openSavedMenu();
+  });
   el.url.addEventListener('change', async () => {
     normalizeURLPathInput();
     applyTransportFromURL();
@@ -1989,6 +2384,9 @@ async function init() {
   el.url.addEventListener('input', () => {
     if (syncingQuery) return;
     if (isHTTPMode()) syncParamsFromURL();
+    if (!canOpenSavedMenu()) return;
+    savedFilterArmed = true;
+    if (currentProfileRequests().length) openSavedMenu();
   });
   el.protocol.addEventListener('change', persistProfile);
   el.method.addEventListener('change', persistProfile);

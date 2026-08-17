@@ -18,6 +18,10 @@ export function DeleteProfile(arg1) {
   return window['go']['main']['App']['DeleteProfile'](arg1);
 }
 
+export function DeleteRequest(arg1, arg2) {
+  return window['go']['main']['App']['DeleteRequest'](arg1, arg2);
+}
+
 export function Disconnect() {
   return window['go']['main']['App']['Disconnect']();
 }
@@ -50,6 +54,10 @@ export function LoadSession(arg1) {
   return window['go']['main']['App']['LoadSession'](arg1);
 }
 
+export function LoadSessionMessage(arg1) {
+  return window['go']['main']['App']['LoadSessionMessage'](arg1);
+}
+
 export function OpenLogDir() {
   return window['go']['main']['App']['OpenLogDir']();
 }
@@ -72,6 +80,10 @@ export function RequestHTTP(arg1, arg2) {
 
 export function SaveProfile(arg1) {
   return window['go']['main']['App']['SaveProfile'](arg1);
+}
+
+export function SaveRequest(arg1, arg2) {
+  return window['go']['main']['App']['SaveRequest'](arg1, arg2);
 }
 
 export function SearchSessions(arg1) {

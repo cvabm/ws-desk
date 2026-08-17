@@ -215,7 +215,12 @@ func (a *App) LoadSession(name string) (*SessionDetail, error) {
 	if err != nil || strings.HasPrefix(rel, "..") {
 		return nil, fmt.Errorf("log must be under log directory")
 	}
-	return loadSessionFile(abs)
+	d, err := loadSessionFile(abs)
+	if err != nil {
+		return nil, err
+	}
+	a.setHistCache(abs, d)
+	return slimDetail(d), nil
 }
 
 // PickAndLoadSession opens a file dialog and loads any .jsonl log.
@@ -234,7 +239,38 @@ func (a *App) PickAndLoadSession() (*SessionDetail, error) {
 	if path == "" {
 		return nil, nil
 	}
-	return loadSessionFile(path)
+	d, err := loadSessionFile(path)
+	if err != nil {
+		return nil, err
+	}
+	a.setHistCache(path, d)
+	return slimDetail(d), nil
+}
+
+// LoadSessionMessage returns the full cached history row (after LoadSession).
+func (a *App) LoadSessionMessage(id int64) (*Msg, error) {
+	a.histMu.Lock()
+	defer a.histMu.Unlock()
+	if a.histFull == nil {
+		return nil, fmt.Errorf("no history loaded")
+	}
+	for i := range a.histFull.Messages {
+		if a.histFull.Messages[i].ID == id {
+			m := a.histFull.Messages[i]
+			if m.Exchange != nil && len(m.Pretty) > 512 {
+				m.Pretty = ""
+			}
+			return &m, nil
+		}
+	}
+	return nil, fmt.Errorf("message not found")
+}
+
+func (a *App) setHistCache(path string, d *SessionDetail) {
+	a.histMu.Lock()
+	a.histPath = path
+	a.histFull = d
+	a.histMu.Unlock()
 }
 
 // OpenLogDir reveals the log folder in Explorer.
@@ -253,28 +289,19 @@ func peekSessionURL(path string) string {
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	// last non-empty url wins (more recent connect of the day)
+	sc.Buffer(make([]byte, 0, 32*1024), 256*1024)
 	url := ""
-	for i := 0; i < 50 && sc.Scan(); i++ {
-		var row map[string]any
-		if json.Unmarshal(sc.Bytes(), &row) != nil {
+	for i := 0; i < 80 && sc.Scan(); i++ {
+		var row struct {
+			Kind string `json:"kind"`
+			URL  string `json:"url"`
+		}
+		if json.Unmarshal(sc.Bytes(), &row) != nil || row.URL == "" {
 			continue
 		}
-		if u, ok := row["url"].(string); ok && u != "" {
-			url = u
-		}
-	}
-	// also scan rest lightly for latest url
-	for sc.Scan() {
-		var row map[string]any
-		if json.Unmarshal(sc.Bytes(), &row) != nil {
-			continue
-		}
-		if kind, _ := row["kind"].(string); kind == "meta" {
-			if u, ok := row["url"].(string); ok && u != "" {
-				url = u
-			}
+		url = row.URL
+		if row.Kind == "meta" {
+			return url
 		}
 	}
 	return url
@@ -308,7 +335,7 @@ func loadSessionFile(path string) (*SessionDetail, error) {
 	}
 
 	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 256*1024), 8*1024*1024)
+	sc.Buffer(make([]byte, 0, 256*1024), 16*1024*1024)
 
 	var autoID int64
 	for sc.Scan() {
@@ -316,44 +343,39 @@ func loadSessionFile(path string) (*SessionDetail, error) {
 		if line == "" {
 			continue
 		}
-		var raw map[string]any
-		if err := json.Unmarshal([]byte(line), &raw); err != nil {
+		var row histRow
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
 			continue
 		}
-		kind, _ := raw["kind"].(string)
-		switch kind {
+		switch row.Kind {
 		case "meta":
-			if u, ok := raw["url"].(string); ok {
-				detail.URL = u
-				detail.Info.URL = u
-				if h := urlHostPort(u); h != "" {
+			if row.URL != "" {
+				detail.URL = row.URL
+				detail.Info.URL = row.URL
+				if h := urlHostPort(row.URL); h != "" {
 					detail.Info.Host = h
 				}
 			}
-			if h, ok := raw["host"].(string); ok && h != "" && detail.Info.Host == "" {
-				detail.Info.Host = h
+			if row.Host != "" && detail.Info.Host == "" {
+				detail.Info.Host = row.Host
 			}
-			if p, ok := raw["protocol"].(string); ok {
-				detail.Protocol = p
+			if row.Protocol != "" {
+				detail.Protocol = row.Protocol
 			}
-			if ev, ok := raw["event"].(string); ok {
-				detail.Notes = append(detail.Notes, ev)
-				// surface session boundaries as sys lines for readability
+			if row.Event != "" {
+				detail.Notes = append(detail.Notes, row.Event)
 				autoID++
-				ts, _ := raw["ts"].(string)
-				sess, _ := raw["session"].(string)
-				url, _ := raw["url"].(string)
-				text := ev
-				if sess != "" {
-					text += " #" + sess
+				text := row.Event
+				if row.Session != "" {
+					text += " #" + row.Session
 				}
-				if url != "" {
-					text += " " + url
+				if row.URL != "" {
+					text += " " + row.URL
 				}
 				detail.Messages = append(detail.Messages, Msg{
 					ID:     autoID,
 					Dir:    "sys",
-					Time:   ts,
+					Time:   row.TS,
 					Text:   text,
 					Pretty: text,
 					Bytes:  len(text),
@@ -361,15 +383,12 @@ func loadSessionFile(path string) (*SessionDetail, error) {
 			}
 		case "sys":
 			autoID++
-			ts, _ := raw["ts"].(string)
-			ev, _ := raw["event"].(string)
-			detailText, _ := raw["detail"].(string)
-			text := ev
-			if detailText != "" {
+			text := row.Event
+			if row.Detail != "" {
 				if text != "" {
 					text += ": "
 				}
-				text += detailText
+				text += row.Detail
 			}
 			if text == "" {
 				text = line
@@ -377,76 +396,50 @@ func loadSessionFile(path string) (*SessionDetail, error) {
 			detail.Messages = append(detail.Messages, Msg{
 				ID:     autoID,
 				Dir:    "sys",
-				Time:   ts,
+				Time:   row.TS,
 				Text:   text,
 				Pretty: text,
 				Bytes:  len(text),
 			})
 		case "msg":
-			m := Msg{Dir: "sys"}
-			if id, ok := asInt64(raw["id"]); ok {
-				m.ID = id
-			} else {
-				autoID++
-				m.ID = autoID
-			}
-			// daily file may reuse ids across sessions — force unique for UI
 			autoID++
-			m.ID = autoID
-			if d, ok := raw["dir"].(string); ok {
-				m.Dir = d
+			m := Msg{
+				ID:       autoID,
+				Dir:      row.Dir,
+				Time:     row.TS,
+				Text:     row.Text,
+				Pretty:   row.Pretty,
+				Bytes:    row.Bytes,
+				Exchange: row.Exchange,
+				WS:       row.WS,
 			}
-			if ts, ok := raw["ts"].(string); ok {
-				m.Time = ts
-			}
-			if t, ok := raw["text"].(string); ok {
-				m.Text = t
-			}
-			if p, ok := raw["pretty"].(string); ok {
-				m.Pretty = p
+			if m.Dir == "" {
+				m.Dir = "sys"
 			}
 			if m.Pretty == "" {
-				m.Pretty = prettyJSON(m.Text)
+				m.Pretty = m.Text
 			}
-			if b, ok := asInt64(raw["bytes"]); ok {
-				m.Bytes = int(b)
-			} else {
+			if m.Bytes == 0 {
 				m.Bytes = len(m.Text)
-			}
-			if raw["exchange"] != nil {
-				if b, err := json.Marshal(raw["exchange"]); err == nil {
-					var ex HTTPExchange
-					if json.Unmarshal(b, &ex) == nil {
-						m.Exchange = &ex
-					}
-				}
-			}
-			if raw["ws"] != nil {
-				if b, err := json.Marshal(raw["ws"]); err == nil {
-					var rec WSRecord
-					if json.Unmarshal(b, &rec) == nil {
-						m.WS = &rec
-					}
-				}
 			}
 			detail.Messages = append(detail.Messages, m)
 		default:
-			if t, ok := raw["text"].(string); ok {
-				autoID++
-				dir, _ := raw["dir"].(string)
-				if dir == "" {
-					dir = "sys"
-				}
-				ts, _ := raw["ts"].(string)
-				detail.Messages = append(detail.Messages, Msg{
-					ID:     autoID,
-					Dir:    dir,
-					Time:   ts,
-					Text:   t,
-					Pretty: prettyJSON(t),
-					Bytes:  len(t),
-				})
+			if row.Text == "" {
+				continue
 			}
+			autoID++
+			dir := row.Dir
+			if dir == "" {
+				dir = "sys"
+			}
+			detail.Messages = append(detail.Messages, Msg{
+				ID:     autoID,
+				Dir:    dir,
+				Time:   row.TS,
+				Text:   row.Text,
+				Pretty: row.Text,
+				Bytes:  len(row.Text),
+			})
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -455,18 +448,53 @@ func loadSessionFile(path string) (*SessionDetail, error) {
 	return detail, nil
 }
 
-func asInt64(v any) (int64, bool) {
-	switch n := v.(type) {
-	case float64:
-		return int64(n), true
-	case int64:
-		return n, true
-	case int:
-		return int64(n), true
-	case json.Number:
-		i, err := n.Int64()
-		return i, err == nil
-	default:
-		return 0, false
+type histRow struct {
+	Kind     string        `json:"kind"`
+	Dir      string        `json:"dir"`
+	TS       string        `json:"ts"`
+	Text     string        `json:"text"`
+	Pretty   string        `json:"pretty"`
+	Bytes    int           `json:"bytes"`
+	URL      string        `json:"url"`
+	Host     string        `json:"host"`
+	Protocol string        `json:"protocol"`
+	Event    string        `json:"event"`
+	Detail   string        `json:"detail"`
+	Session  string        `json:"session"`
+	Exchange *HTTPExchange `json:"exchange"`
+	WS       *WSRecord     `json:"ws"`
+}
+
+const slimPreview = 480
+
+func slimMsg(m Msg) Msg {
+	out := m
+	out.Slim = true
+	out.Text = clipText(m.Text, slimPreview)
+	out.Pretty = clipText(m.Pretty, slimPreview)
+	if m.Exchange != nil {
+		ex := *m.Exchange
+		ex.ReqBody = clipText(ex.ReqBody, slimPreview)
+		ex.ResBody = clipText(ex.ResBody, slimPreview)
+		out.Exchange = &ex
 	}
+	if m.WS != nil {
+		ws := *m.WS
+		ws.Out = clipText(ws.Out, slimPreview)
+		ws.In = clipText(ws.In, slimPreview)
+		out.WS = &ws
+	}
+	return out
+}
+
+func slimDetail(d *SessionDetail) *SessionDetail {
+	if d == nil {
+		return nil
+	}
+	out := *d
+	out.Messages = make([]Msg, len(d.Messages))
+	for i, m := range d.Messages {
+		out.Messages[i] = slimMsg(m)
+	}
+	return &out
 }

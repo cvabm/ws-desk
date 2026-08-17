@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 type sessionLogger struct {
@@ -172,4 +173,17 @@ func prettyJSON(text string) string {
 		return text
 	}
 	return string(b)
+}
+
+func clipText(s string, n int) string {
+	if n <= 0 || len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	if n <= 0 {
+		return "…"
+	}
+	return s[:n] + "…"
 }

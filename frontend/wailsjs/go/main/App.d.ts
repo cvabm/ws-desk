@@ -10,6 +10,8 @@ export function Connect(arg1:main.ConnectOptions):Promise<void>;
 
 export function DeleteProfile(arg1:string):Promise<void>;
 
+export function DeleteRequest(arg1:string,arg2:string):Promise<void>;
+
 export function Disconnect():Promise<void>;
 
 export function FormatJSON(arg1:string):Promise<string>;
@@ -26,6 +28,8 @@ export function ListSessions():Promise<Array<main.SessionInfo>>;
 
 export function LoadSession(arg1:string):Promise<main.SessionDetail>;
 
+export function LoadSessionMessage(arg1:number):Promise<main.Msg>;
+
 export function OpenLogDir():Promise<void>;
 
 export function PickAndLoadSession():Promise<main.SessionDetail>;
@@ -37,6 +41,8 @@ export function RecordWS(arg1:main.ConnectOptions,arg2:string,arg3:string):Promi
 export function RequestHTTP(arg1:main.ConnectOptions,arg2:string):Promise<main.HTTPExchange>;
 
 export function SaveProfile(arg1:main.Profile):Promise<void>;
+
+export function SaveRequest(arg1:string,arg2:main.SavedRequest):Promise<main.SavedRequest>;
 
 export function SearchSessions(arg1:string):Promise<Array<main.SessionInfo>>;
 

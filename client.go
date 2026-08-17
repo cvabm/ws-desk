@@ -606,7 +606,7 @@ func (c *wsClient) push(dir, text string) {
 
 func (c *wsClient) pushWS(dir, text string, rec *WSRecord) {
 	pretty := text
-	if dir == "in" || dir == "out" {
+	if (dir == "in" || dir == "out") && len(text) <= 16*1024 {
 		pretty = prettyJSON(text)
 	}
 	c.emitMsg(Msg{
@@ -622,7 +622,9 @@ func (c *wsClient) pushWS(dir, text string, rec *WSRecord) {
 
 func (c *wsClient) pushEx(dir, text string, ex *HTTPExchange) {
 	pretty := text
-	if dir == "in" || dir == "out" {
+	if ex != nil {
+		pretty = clipText(text, 480)
+	} else if (dir == "in" || dir == "out") && len(text) <= 16*1024 {
 		pretty = prettyJSON(text)
 	}
 	c.emitMsg(Msg{

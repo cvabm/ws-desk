@@ -10,12 +10,66 @@ export function escapeHtml(s) {
 /**
  * Lightweight JSON (and JSON-like) syntax highlighter for non-tree plain text.
  */
+const HIGHLIGHT_CAP = 48000;
+const TREE_ENTRY_CAP = 80;
+const TREE_STR_CAP = 4000;
+
+/** @type {Map<string, any>} */
+const treeStore = new Map();
+/** @type {Map<string, string>} */
+const textStore = new Map();
+let treeSeq = 0;
+
+function resetTreeStore() {
+  treeStore.clear();
+  textStore.clear();
+}
+
+function rememberText(s) {
+  const id = `s${++treeSeq}`;
+  textStore.set(id, s);
+  return id;
+}
+
+function rememberTree(value) {
+  const id = `t${++treeSeq}`;
+  treeStore.set(id, value);
+  return id;
+}
+
+function valueAtPath(root, path) {
+  if (root == null) return undefined;
+  if (!path) return root;
+  let cur = root;
+  for (const part of path.split('/')) {
+    if (part === '') continue;
+    if (cur == null) return undefined;
+    const key = decodeURIComponent(part);
+    cur = Array.isArray(cur) ? cur[Number(key)] : cur[key];
+  }
+  return cur;
+}
+
+function childPath(path, key) {
+  return `${path}/${encodeURIComponent(String(key))}`;
+}
+
 export function highlightJson(text) {
-  const s = String(text ?? '');
-  if (!s) return '';
+  const raw = String(text ?? '');
+  if (!raw) return '';
+  const clipped = raw.length > HIGHLIGHT_CAP;
+  const s = clipped ? raw.slice(0, HIGHLIGHT_CAP) : raw;
 
   if (!/[{[\]":\d]|true|false|null/.test(s)) {
-    return escapeHtml(s);
+    if (!clipped) return escapeHtml(s);
+    const id = rememberText(raw);
+    return (
+      escapeHtml(s) +
+      `<span class="jt-str" data-text="${id}">` +
+        `<span class="tok-meta">… 已截断显示（共 ${raw.length} 字）</span>` +
+        `<button type="button" class="jt-str-more">展开全部</button>` +
+      `</span>`
+    );
   }
 
   let i = 0;
@@ -97,6 +151,14 @@ export function highlightJson(text) {
     i++;
   }
 
+  if (clipped) {
+    const id = rememberText(raw);
+    out +=
+      `<span class="jt-str" data-text="${id}">` +
+        `<span class="tok-meta">… 已截断显示（共 ${raw.length} 字）</span>` +
+        `<button type="button" class="jt-str-more">展开全部</button>` +
+      `</span>`;
+  }
   return out;
 }
 
@@ -126,11 +188,22 @@ function keyHtml(key) {
   return `<span class="tok-key">"${escapeHtml(String(key))}"</span><span class="tok-punc">: </span>`;
 }
 
-function primitiveHtml(value) {
+function primitiveHtml(value, treeId, path) {
   if (value === null) return `<span class="tok-null">null</span>`;
   if (typeof value === 'boolean') return `<span class="tok-bool">${value}</span>`;
   if (typeof value === 'number') return `<span class="tok-num">${escapeHtml(String(value))}</span>`;
-  if (typeof value === 'string') return `<span class="tok-str">"${escapeHtml(value)}"</span>`;
+  if (typeof value === 'string') {
+    if (value.length > TREE_STR_CAP && treeId) {
+      return (
+        `<span class="jt-str" data-tree="${escapeHtml(treeId)}" data-path="${escapeHtml(path || '')}">` +
+          `<span class="tok-str">"${escapeHtml(value.slice(0, TREE_STR_CAP))}…"</span>` +
+          `<span class="tok-meta"> (${value.length} 字)</span>` +
+          `<button type="button" class="jt-str-more">展开全部</button>` +
+        `</span>`
+      );
+    }
+    return `<span class="tok-str">"${escapeHtml(value)}"</span>`;
+  }
   return `<span class="tok-str">${escapeHtml(String(value))}</span>`;
 }
 
@@ -146,36 +219,63 @@ function previewLabel(value) {
   return '';
 }
 
+function takeEntries(value, cap) {
+  if (Array.isArray(value)) {
+    const n = Math.min(value.length, cap);
+    const entries = new Array(n);
+    for (let i = 0; i < n; i++) entries[i] = [i, value[i]];
+    return { entries, total: value.length };
+  }
+  const keys = Object.keys(value);
+  const n = Math.min(keys.length, cap);
+  const entries = new Array(n);
+  for (let i = 0; i < n; i++) entries[i] = [keys[i], value[keys[i]]];
+  return { entries, total: keys.length };
+}
+
+function renderEntries(value, depth, treeId, path) {
+  const isArr = Array.isArray(value);
+  const close = isArr ? ']' : '}';
+  const { entries, total } = takeEntries(value, TREE_ENTRY_CAP);
+  const more = total - entries.length;
+  let kids = '';
+  for (let i = 0; i < entries.length; i++) {
+    const [k, v] = entries[i];
+    kids += renderTree(v, k, depth + 1, i < entries.length - 1 || more > 0, treeId, childPath(path, k));
+  }
+  if (more > 0) {
+    kids += `<div class="jt-line"><span class="tok-meta">… 还有 ${more} 项</span></div>`;
+  }
+  kids += `<div class="jt-line"><span class="tok-punc">${close}</span></div>`;
+  return kids;
+}
+
 /**
  * Render a JSON value as a collapsible tree.
- * depth>=2 nodes start collapsed (root and first level open).
+ * depth>=2 nodes start collapsed and children are built on expand.
  */
-function renderTree(value, key, depth, trailingComma) {
+function renderTree(value, key, depth, trailingComma, treeId, path) {
   const comma = trailingComma ? `<span class="tok-punc">,</span>` : '';
   const isObj = value !== null && typeof value === 'object';
 
   if (!isObj) {
-    return `<div class="jt-line">${keyHtml(key)}${primitiveHtml(value)}${comma}</div>`;
+    return `<div class="jt-line">${keyHtml(key)}${primitiveHtml(value, treeId, path)}${comma}</div>`;
   }
 
   const isArr = Array.isArray(value);
-  const entries = isArr
-    ? value.map((v, i) => [i, v])
-    : Object.entries(value);
+  const total = isArr ? value.length : Object.keys(value).length;
   const open = isArr ? '[' : '{';
   const close = isArr ? ']' : '}';
 
-  if (entries.length === 0) {
+  if (total === 0) {
     return `<div class="jt-line">${keyHtml(key)}<span class="tok-punc">${open}${close}</span>${comma}</div>`;
   }
 
   const collapsed = depth >= 2;
-  const kids = entries
-    .map(([k, v], i) => renderTree(v, isArr ? k : k, depth + 1, i < entries.length - 1))
-    .join('');
+  const kids = collapsed ? '' : renderEntries(value, depth, treeId, path);
 
   return (
-    `<div class="jt-node${collapsed ? ' collapsed' : ''}">` +
+    `<div class="jt-node${collapsed ? ' collapsed' : ''}" data-tree="${escapeHtml(treeId)}" data-path="${escapeHtml(path || '')}">` +
       `<div class="jt-line jt-toggle-line" role="button" tabindex="0" title="点击展开/收起">` +
         `<span class="jt-toggle" aria-hidden="true">${collapsed ? '▶' : '▼'}</span>` +
         `${keyHtml(key)}` +
@@ -184,9 +284,8 @@ function renderTree(value, key, depth, trailingComma) {
         `<span class="jt-ellipsis">…</span>` +
         `<span class="tok-punc jt-close-inline">${close}</span>${comma}` +
       `</div>` +
-      `<div class="jt-children">` +
+      `<div class="jt-children"${collapsed ? '' : ' data-ready="1"'}>` +
         kids +
-        `<div class="jt-line"><span class="tok-punc">${close}</span>${comma}</div>` +
       `</div>` +
     `</div>`
   );
@@ -215,11 +314,13 @@ function bodyBlock(raw) {
   if (!parsed.ok) {
     return `<div class="jt-plain">${raw ? highlightJson(raw) : '<span class="resp-empty">(empty)</span>'}</div>`;
   }
-  return `<div class="jt-root">${renderTree(parsed.value, null, 0, false)}</div>`;
+  const id = rememberTree(parsed.value);
+  return `<div class="jt-root" data-tree="${id}">${renderTree(parsed.value, null, 0, false, id, '')}</div>`;
 }
 
 /** Render a Postman-like HTTP request/response snapshot. */
 export function renderHTTPExchange(ex) {
+  resetTreeStore();
   if (!ex) return '';
   const code = ex.statusCode || 0;
   const size = ex.bytes || 0;
@@ -243,6 +344,7 @@ export function renderHTTPExchange(ex) {
 
 /** Render a manually saved WebSocket send/receive pair. */
 export function renderWSRecord(rec) {
+  resetTreeStore();
   if (!rec) return '';
   const size = (rec.out || '').length + (rec.in || '').length;
   const sizeLabel = size < 1024 ? `${size} B` : `${(size / 1024).toFixed(1)} KB`;
@@ -261,25 +363,81 @@ export function renderWSRecord(rec) {
 
 /** Render detail header + collapsible JSON tree (or flat highlighted text). */
 export function renderDetailHtml(dir, time, body) {
+  resetTreeStore();
   const meta = `<div class="detail-meta">[${escapeHtml(dir)}] ${escapeHtml(time)}</div>`;
   const raw = body ?? '';
   const parsed = tryParseJson(raw);
   if (!parsed.ok) {
     return `${meta}<div class="jt-plain">${highlightJson(raw)}</div>`;
   }
-  return `${meta}<div class="jt-root">${renderTree(parsed.value, null, 0, false)}</div>`;
+  const id = rememberTree(parsed.value);
+  return `${meta}<div class="jt-root" data-tree="${id}">${renderTree(parsed.value, null, 0, false, id, '')}</div>`;
 }
 
-/** Toggle a .jt-node open/collapsed. Returns true if handled. */
+function toggleLongString(btn) {
+  const wrap = btn.closest('.jt-str');
+  if (!wrap) return false;
+  const open = wrap.classList.toggle('open');
+  if (wrap.dataset.text) {
+    const host = wrap.closest('.jt-plain') || wrap.parentElement;
+    if (!host) return true;
+    let rest = host.querySelector(':scope > .jt-str-rest');
+    if (open) {
+      if (!rest) {
+        const raw = textStore.get(wrap.dataset.text);
+        if (raw == null) return true;
+        rest = document.createElement('span');
+        rest.className = 'jt-str-rest';
+        rest.textContent = raw.slice(HIGHLIGHT_CAP);
+        host.appendChild(rest);
+      }
+      rest.hidden = false;
+      const meta = wrap.querySelector('.tok-meta');
+      if (meta) meta.hidden = true;
+      btn.textContent = '收起';
+    } else {
+      if (rest) rest.hidden = true;
+      const meta = wrap.querySelector('.tok-meta');
+      if (meta) meta.hidden = false;
+      btn.textContent = '展开全部';
+    }
+    return true;
+  }
+  const val = valueAtPath(treeStore.get(wrap.dataset.tree), wrap.dataset.path || '');
+  if (typeof val !== 'string') return true;
+  const strEl = wrap.querySelector('.tok-str');
+  if (strEl) {
+    strEl.textContent = open ? `"${val}"` : `"${val.slice(0, TREE_STR_CAP)}…"`;
+  }
+  const meta = wrap.querySelector('.tok-meta');
+  if (meta) meta.hidden = open;
+  btn.textContent = open ? '收起' : '展开全部';
+  return true;
+}
+
+/** Toggle a .jt-node open/collapsed, or expand a clipped long string. */
 export function toggleJsonNode(target) {
+  const more = target?.closest?.('.jt-str-more');
+  if (more) return toggleLongString(more);
   const line = target?.closest?.('.jt-toggle-line');
   if (!line) return false;
   const node = line.closest('.jt-node');
   if (!node) return false;
   node.classList.toggle('collapsed');
+  const collapsed = node.classList.contains('collapsed');
   const mark = line.querySelector('.jt-toggle');
-  if (mark) {
-    mark.textContent = node.classList.contains('collapsed') ? '▶' : '▼';
+  if (mark) mark.textContent = collapsed ? '▶' : '▼';
+  if (!collapsed) {
+    const kids = node.querySelector(':scope > .jt-children');
+    if (kids && kids.dataset.ready !== '1') {
+      const treeId = node.dataset.tree || node.closest('.jt-root')?.dataset.tree;
+      const path = node.dataset.path || '';
+      const val = valueAtPath(treeStore.get(treeId), path);
+      if (val && typeof val === 'object') {
+        kids.innerHTML = renderEntries(val, 2, treeId, path);
+        kids.dataset.ready = '1';
+      }
+    }
   }
   return true;
 }

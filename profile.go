@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -8,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 func (a *App) ensureServers() error {
@@ -221,4 +224,140 @@ func sanitizeName(s string) string {
 	}
 	repl := strings.NewReplacer("/", "-", "\\", "-", ":", "-", "*", "-", "?", "-", "\"", "", "<", "", ">", "", "|", "-")
 	return repl.Replace(s)
+}
+
+func resolveProfileName(hint string) string {
+	hint = strings.TrimSpace(hint)
+	if hint == "" {
+		return ""
+	}
+	if name := profileNameFromURL(hint); name != "" {
+		return name
+	}
+	return hint
+}
+
+func newRequestID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return hex.EncodeToString(b[:])
+	}
+	return fmt.Sprintf("%d", time.Now().UnixNano())
+}
+
+func (a *App) loadProfileByName(name string) (Profile, error) {
+	name = resolveProfileName(name)
+	if name == "" {
+		return Profile{}, fmt.Errorf("profile is required")
+	}
+	if err := a.ensureServers(); err != nil {
+		return Profile{}, err
+	}
+	raw, err := os.ReadFile(filepath.Join(a.serversDir(), profileFileName(name)))
+	if err != nil {
+		return Profile{}, err
+	}
+	var p Profile
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return Profile{}, err
+	}
+	if n := profileNameFromURL(p.URL); n != "" {
+		p.Name = n
+	} else if p.Name == "" {
+		p.Name = name
+	}
+	if p.Headers == nil {
+		p.Headers = map[string]string{}
+	}
+	return p, nil
+}
+
+func (a *App) mergeProfileRequests(p Profile) Profile {
+	if p.Requests != nil {
+		return p
+	}
+	existing, err := a.loadProfileByName(p.Name)
+	if err != nil {
+		return p
+	}
+	p.Requests = existing.Requests
+	return p
+}
+
+func upsertSavedRequest(list []SavedRequest, req SavedRequest) ([]SavedRequest, SavedRequest) {
+	if req.ID != "" {
+		for i, r := range list {
+			if r.ID == req.ID {
+				list[i] = req
+				return list, req
+			}
+		}
+	}
+	for i, r := range list {
+		if r.Name == req.Name {
+			if req.ID == "" {
+				req.ID = r.ID
+			}
+			list[i] = req
+			return list, req
+		}
+	}
+	if req.ID == "" {
+		req.ID = newRequestID()
+	}
+	return append(list, req), req
+}
+
+func (a *App) saveRequestOnProfile(profileHint string, req SavedRequest) (SavedRequest, error) {
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		return SavedRequest{}, fmt.Errorf("name is required")
+	}
+	if runes := []rune(req.Name); len(runes) > 80 {
+		req.Name = string(runes[:80])
+	}
+	req.URL = strings.TrimSpace(req.URL)
+	req.ID = strings.TrimSpace(req.ID)
+	name := resolveProfileName(profileHint)
+	if name == "" {
+		name = profileNameFromURL(req.URL)
+	}
+	if name == "" {
+		return SavedRequest{}, fmt.Errorf("profile is required")
+	}
+	p, err := a.loadProfileByName(name)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return SavedRequest{}, err
+		}
+		p = Profile{Name: name, URL: req.URL, Headers: map[string]string{}}
+		if p.URL == "" {
+			p.URL = name
+		}
+	}
+	var saved SavedRequest
+	p.Requests, saved = upsertSavedRequest(p.Requests, req)
+	if err := a.saveProfileFile(p); err != nil {
+		return SavedRequest{}, err
+	}
+	return saved, nil
+}
+
+func (a *App) deleteRequestOnProfile(profileHint, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("id is required")
+	}
+	p, err := a.loadProfileByName(profileHint)
+	if err != nil {
+		return err
+	}
+	out := make([]SavedRequest, 0, len(p.Requests))
+	for _, r := range p.Requests {
+		if r.ID != id {
+			out = append(out, r)
+		}
+	}
+	p.Requests = out
+	return a.saveProfileFile(p)
 }

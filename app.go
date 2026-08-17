@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 // App is the Wails application API surface.
@@ -12,6 +13,10 @@ type App struct {
 	ctx     context.Context
 	baseDir string
 	hub     *clientHub
+
+	histMu   sync.Mutex
+	histPath string
+	histFull *SessionDetail
 }
 
 // NewApp creates a new App application struct.
@@ -98,7 +103,17 @@ func (a *App) SaveProfile(p Profile) error {
 	if p.Name == "" {
 		return fmt.Errorf("url host is required")
 	}
-	return a.saveProfileFile(p)
+	return a.saveProfileFile(a.mergeProfileRequests(p))
+}
+
+// SaveRequest upserts a named request bookmark under the host profile.
+func (a *App) SaveRequest(profileHint string, req SavedRequest) (SavedRequest, error) {
+	return a.saveRequestOnProfile(profileHint, req)
+}
+
+// DeleteRequest removes a named request bookmark from the host profile.
+func (a *App) DeleteRequest(profileHint, id string) error {
+	return a.deleteRequestOnProfile(profileHint, id)
 }
 
 // DeleteProfile removes the saved preset for a scheme://host[:port] (or raw URL).
