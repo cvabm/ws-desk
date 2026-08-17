@@ -148,10 +148,14 @@ const el = {
   btnFmtRecRes: $('btnFmtRecRes'),
 };
 
+const LIVE_LIST_CAP = 2000;
+
 /** @type {Map<number, any>} */
 const store = new Map();
 /** @type {any[]} */
 let allHistoryMsgs = [];
+/** @type {any[]} */
+let allLiveMsgs = [];
 let selectedId = 0;
 let lastSent = '';
 let historyMode = false;
@@ -270,9 +274,63 @@ function isHTTPStatusNote(m) {
   return /^http\s+\d{3}\b/i.test(t) && /\d+\s*ms/i.test(t);
 }
 
+function currentFilterKw() {
+  return (el.msgFilter?.value || '').trim();
+}
+
+function currentMsgPool() {
+  return historyMode ? allHistoryMsgs : allLiveMsgs;
+}
+
+function liveListTitleBase() {
+  return isHTTPMode() ? '记录' : '消息';
+}
+
+function setLiveListTitle(shown, total, kw) {
+  if (historyMode || !el.listTitle) return;
+  const base = liveListTitleBase();
+  el.listTitle.textContent = kw ? `${base} · ${shown}/${total}` : base;
+}
+
+function refreshFilterTitle() {
+  if (historyMode) return;
+  const pool = allLiveMsgs;
+  const kw = currentFilterKw();
+  setLiveListTitle(kw ? el.list.children.length : pool.length, pool.length, kw);
+}
+
+function removeListRow(id) {
+  if (!id) return;
+  store.delete(id);
+  const row = el.list.querySelector(`[data-id="${id}"]`);
+  row?.remove();
+  if (selectedId === id) {
+    selectedId = 0;
+    setDetailEmpty('选择一条消息');
+    setFillButton(false);
+  }
+}
+
+function rememberLiveMsg(m) {
+  if (!m || isHTTPStatusNote(m)) return false;
+  if (allLiveMsgs.some((x) => x.id === m.id)) return false;
+  allLiveMsgs.push(m);
+  while (allLiveMsgs.length > LIVE_LIST_CAP) {
+    const old = allLiveMsgs.shift();
+    if (old) removeListRow(old.id);
+  }
+  return true;
+}
+
 function appendMsg(m, scroll = true) {
   if (!m || store.has(m.id) || isHTTPStatusNote(m)) return;
   store.set(m.id, m);
+
+  const kw = currentFilterKw();
+  if (kw && !msgMatches(m, kw)) {
+    refreshFilterTitle();
+    return;
+  }
 
   const row = document.createElement('div');
   row.className = 'row';
@@ -288,14 +346,15 @@ function appendMsg(m, scroll = true) {
   row.addEventListener('click', () => selectMsg(m.id));
   el.list.appendChild(row);
 
-  while (el.list.children.length > 2000) {
+  while (el.list.children.length > LIVE_LIST_CAP) {
     const first = el.list.firstElementChild;
     const id = Number(first?.dataset.id);
     if (id) store.delete(id);
     first?.remove();
   }
 
-  if (scroll) {
+  refreshFilterTitle();
+  if (scroll && !kw) {
     const nearBottom = el.list.scrollHeight - el.list.scrollTop - el.list.clientHeight < 80;
     if (nearBottom) el.list.scrollTop = el.list.scrollHeight;
   }
@@ -345,20 +404,43 @@ function setHistoryMode(on, label = '') {
   historyMode = on;
   el.app?.classList.toggle('history', on);
   el.histBanner.classList.toggle('hidden', !on);
-  el.msgFilter.classList.toggle('hidden', !on);
   el.reqPane?.classList.toggle('hidden', on || !isHTTPMode());
   el.composer?.classList.toggle('hidden', on);
-  el.listTitle.textContent = on
-    ? '历史消息'
-    : isHTTPMode()
-      ? '记录'
-      : '消息';
   if (on) {
+    el.listTitle.textContent = '历史消息';
     el.histLabel.textContent = label || '历史模式';
   } else {
     el.msgFilter.value = '';
     allHistoryMsgs = [];
     activeHistKeyword = '';
+    setLiveListTitle(allLiveMsgs.length, allLiveMsgs.length, '');
+  }
+}
+
+async function loadLiveMessages() {
+  const arrived = [];
+  allLiveMsgs = arrived;
+  clearListUI();
+  try {
+    const msgs = await GetMessages(0, 500);
+    const seen = new Set();
+    const next = [];
+    for (const m of msgs || []) {
+      if (!m || isHTTPStatusNote(m) || seen.has(m.id)) continue;
+      seen.add(m.id);
+      next.push(m);
+    }
+    for (const m of arrived) {
+      if (!m || seen.has(m.id)) continue;
+      seen.add(m.id);
+      next.push(m);
+    }
+    allLiveMsgs = next;
+    applyMsgFilter({ selectFirst: false });
+    if (!currentFilterKw()) el.list.scrollTop = el.list.scrollHeight;
+  } catch (_) {
+    allLiveMsgs = arrived.slice();
+    applyMsgFilter({ selectFirst: false });
   }
 }
 
@@ -366,24 +448,35 @@ async function exitHistoryMode() {
   historySessionURL = '';
   historySessionProtocol = '';
   setHistoryMode(false);
-  clearListUI();
-  const existing = await GetMessages(0, 500);
-  for (const m of existing || []) appendMsg(m, false);
-  el.list.scrollTop = el.list.scrollHeight;
+  await loadLiveMessages();
 }
 
-function applyMsgFilter() {
-  if (!historyMode) return;
-  const kw = (el.msgFilter.value || '').trim();
-  const filtered = kw ? allHistoryMsgs.filter((m) => msgMatches(m, kw)) : allHistoryMsgs;
-  const namePart = el.histLabel.textContent || '历史';
-  const base = namePart.replace(/\s*·\s*显示\s+\d+.*/, '');
-  el.histLabel.textContent = kw
-    ? `${base} · 显示 ${filtered.length}/${allHistoryMsgs.length}`
-    : base.includes('条')
-      ? base
-      : `${base} · ${allHistoryMsgs.length} 条`;
-  renderMessageList(filtered, { scrollTop: 0, selectFirst: filtered.length > 0 });
+function applyMsgFilter({ selectFirst = historyMode } = {}) {
+  const pool = currentMsgPool();
+  const kw = currentFilterKw();
+  const filtered = kw ? pool.filter((m) => msgMatches(m, kw)) : pool;
+  if (historyMode) {
+    const namePart = el.histLabel.textContent || '历史';
+    const base = namePart.replace(/\s*·\s*显示\s+\d+.*/, '');
+    el.histLabel.textContent = kw
+      ? `${base} · 显示 ${filtered.length}/${pool.length}`
+      : base.includes('条')
+        ? base
+        : `${base} · ${pool.length} 条`;
+    if (el.listTitle) el.listTitle.textContent = '历史消息';
+  } else {
+    setLiveListTitle(filtered.length, pool.length, kw);
+  }
+  const keepId = selectedId;
+  renderMessageList(filtered, {
+    scrollTop: kw || historyMode ? 0 : el.list.scrollHeight,
+    selectFirst: selectFirst && filtered.length > 0,
+  });
+  if (!selectFirst && keepId && store.has(keepId)) {
+    selectMsg(keepId);
+  } else if (!selectFirst && !kw && !historyMode) {
+    el.list.scrollTop = el.list.scrollHeight;
+  }
 }
 
 function showSession(detail, keyword = '') {
@@ -449,13 +542,10 @@ async function reloadLiveSession() {
     historySessionProtocol = '';
     setHistoryMode(false);
   }
-  clearListUI();
   try {
     setState(await GetStatus());
-    const msgs = await GetMessages(0, 500);
-    for (const m of msgs || []) appendMsg(m, false);
-    el.list.scrollTop = el.list.scrollHeight;
   } catch (_) {}
+  await loadLiveMessages();
 }
 
 function withoutSessionReset(fn) {
@@ -504,7 +594,7 @@ function applyTransportUI(scheme) {
   el.composer?.classList.toggle('hidden', historyMode);
   placePayload(http);
   if (el.detailTitle) el.detailTitle.textContent = http ? '响应' : '详情';
-  if (el.listTitle && !historyMode) el.listTitle.textContent = http ? '记录' : '消息';
+  if (!historyMode) refreshFilterTitle();
   if (http && modeChanged) {
     syncParamsFromURL();
     renderRequestEditor();
@@ -1799,7 +1889,9 @@ async function init() {
       return;
     }
     await ClearMessages();
+    allLiveMsgs = [];
     clearListUI();
+    refreshFilterTitle();
   });
   el.btnTheme.addEventListener('click', toggleTheme);
   // JSON tree node expand/collapse
@@ -1833,9 +1925,7 @@ async function init() {
       refreshHistoryList();
     }
   });
-  el.msgFilter.addEventListener('input', () => {
-    if (historyMode) applyMsgFilter();
-  });
+  el.msgFilter.addEventListener('input', () => applyMsgFilter());
   el.histModal.addEventListener('click', (e) => {
     if (e.target === el.histModal) closeHistoryModal();
   });
@@ -1907,6 +1997,7 @@ async function init() {
   EventsOn('message', (m) => {
     if (historyMode) return;
     if (!isCurrentProfileEvent(m?.profile)) return;
+    rememberLiveMsg(m);
     appendMsg(m, true);
   });
   EventsOn('status', (s) => {
