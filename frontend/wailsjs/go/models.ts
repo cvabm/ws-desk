@@ -24,6 +24,54 @@ export namespace main {
 	        this.noFollowRedirects = source["noFollowRedirects"];
 	    }
 	}
+	export class HeaderItem {
+	    key: string;
+	    value: string;
+	    enabled: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new HeaderItem(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.value = source["value"];
+	        this.enabled = source["enabled"];
+	    }
+	}
+	export class Environment {
+	    name: string;
+	    variables?: HeaderItem[];
+	
+	    static createFrom(source: any = {}) {
+	        return new Environment(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.variables = this.convertValues(source["variables"], HeaderItem);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class HTTPExchange {
 	    method: string;
 	    url: string;
@@ -60,22 +108,7 @@ export namespace main {
 	        this.manual = source["manual"];
 	    }
 	}
-	export class HeaderItem {
-	    key: string;
-	    value: string;
-	    enabled: boolean;
 	
-	    static createFrom(source: any = {}) {
-	        return new HeaderItem(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.key = source["key"];
-	        this.value = source["value"];
-	        this.enabled = source["enabled"];
-	    }
-	}
 	export class WSRecord {
 	    url: string;
 	    protocol?: string;
@@ -223,6 +256,8 @@ export namespace main {
 	    body?: string;
 	    formList?: HeaderItem[];
 	    variableList?: HeaderItem[];
+	    activeEnv?: string;
+	    environments?: Environment[];
 	    reconnect: boolean;
 	    pingSec: number;
 	    noFollowRedirects?: boolean;
@@ -249,6 +284,8 @@ export namespace main {
 	        this.body = source["body"];
 	        this.formList = this.convertValues(source["formList"], HeaderItem);
 	        this.variableList = this.convertValues(source["variableList"], HeaderItem);
+	        this.activeEnv = source["activeEnv"];
+	        this.environments = this.convertValues(source["environments"], Environment);
 	        this.reconnect = source["reconnect"];
 	        this.pingSec = source["pingSec"];
 	        this.noFollowRedirects = source["noFollowRedirects"];

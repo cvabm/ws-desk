@@ -107,6 +107,7 @@ func (a *App) saveProfileFile(p Profile) error {
 		p.Headers = map[string]string{}
 	}
 	p.Modules = normalizeModules(p.Modules)
+	p = finishProfileEnvs(p)
 	data, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
 		return err
@@ -296,7 +297,8 @@ func normalizeModules(list []string) []string {
 func (a *App) mergeProfileRequests(p Profile) Profile {
 	needReq := p.Requests == nil
 	needMod := p.Modules == nil
-	if !needReq && !needMod {
+	needEnv := p.Environments == nil
+	if !needReq && !needMod && !needEnv {
 		p.Modules = normalizeModules(p.Modules)
 		return p
 	}
@@ -310,6 +312,12 @@ func (a *App) mergeProfileRequests(p Profile) Profile {
 	}
 	if needMod {
 		p.Modules = existing.Modules
+	}
+	if needEnv {
+		p.Environments = existing.Environments
+		if p.ActiveEnv == "" {
+			p.ActiveEnv = existing.ActiveEnv
+		}
 	}
 	p.Modules = normalizeModules(p.Modules)
 	return p

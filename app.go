@@ -116,6 +116,16 @@ func (a *App) DeleteRequest(profileHint, id string) error {
 	return a.deleteRequestOnProfile(profileHint, id)
 }
 
+// ExportCatalog writes the current host profile JSON via a save dialog.
+func (a *App) ExportCatalog(p Profile) (bool, error) {
+	return a.exportCatalog(p)
+}
+
+// ImportCatalog writes a picked catalog JSON or Postman Collection onto the hosts in the file.
+func (a *App) ImportCatalog() (*Profile, error) {
+	return a.importCatalog()
+}
+
 // DeleteProfile removes the saved preset for a scheme://host[:port] (or raw URL).
 func (a *App) DeleteProfile(name string) error {
 	if err := a.deleteProfile(name); err != nil {

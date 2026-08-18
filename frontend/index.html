@@ -21,10 +21,8 @@
         <div id="urlBox" class="url-box">
           <span id="urlPrefix" class="url-prefix hidden" aria-hidden="true"></span>
           <input id="url" class="input url" type="text" spellcheck="false" readonly
-                 placeholder="点击 + 填写地址"
-                 aria-autocomplete="list" aria-controls="savedMenu" aria-expanded="false"/>
+                 placeholder="点击 + 填写地址"/>
         </div>
-        <div id="savedMenu" class="saved-menu hidden" role="listbox" aria-hidden="true"></div>
       </div>
       <input id="protocol" class="input proto" type="text" spellcheck="false" placeholder="subprotocol"/>
       <select id="method" class="select method hidden" title="HTTP 方法">
@@ -61,7 +59,13 @@
           </button>
           <span id="catalogTitle">接口</span>
           <div class="pane-actions">
-            <input id="catalogFilter" class="input search-inline catalog-filter" type="search" spellcheck="false" placeholder="过滤…"/>
+            <input id="catalogFilter" class="input search-inline catalog-filter" type="search" spellcheck="false" placeholder="搜索全部主机…"/>
+            <button id="btnCatalogExport" class="btn ghost bar-btn btn-icon" type="button" title="导出当前主机接口" aria-label="导出当前主机接口">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.6v7.2M5.2 7.4L8 10.4l2.8-3M3.2 13.2h9.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button id="btnCatalogImport" class="btn ghost bar-btn btn-icon" type="button" title="导入本机目录或 Postman Collection（按文件里的主机）" aria-label="导入本机目录或 Postman Collection">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10.2V3M5.2 5.6L8 2.6l2.8 3M3.2 13.2h9.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
             <button id="btnCatalogAdd" class="btn ghost bar-btn btn-icon" type="button" title="新建接口" aria-label="新建接口">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.75v10.5M2.75 8h10.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
             </button>
@@ -94,6 +98,14 @@
               </div>
               <input id="reqDesc" class="input req-meta-desc" type="text" spellcheck="false" maxlength="200"
                      placeholder="描述（可选）"/>
+              <div id="envBar" class="env-bar">
+                <span class="env-label">环境</span>
+                <select id="envSelect" class="select env-select" title="切换变量环境"></select>
+                <button id="btnEnvMore" class="btn ghost bar-btn btn-icon env-more" type="button" title="环境菜单" aria-label="环境菜单" aria-haspopup="menu" aria-expanded="false">⋯</button>
+              </div>
+              <div id="envVars" class="env-vars hidden">
+                <div class="vars-hint">当前环境的变量。名字写 Token，发送时替换 {{Token}}</div>
+              </div>
             </div>
             <div id="reqTabs" class="req-tabs">
               <button type="button" class="req-tab" data-tab="params">参数</button>
@@ -130,7 +142,7 @@
               <div id="formRows" class="kv-list hidden"></div>
             </div>
             <div id="tabVars" class="req-panel hidden">
-              <div class="vars-hint">名字写 Token，值写实际内容；在请求头等处用 {{Token}}，发送时替换</div>
+              <div class="vars-hint">当前环境的变量。名字写 Token，在 URL / 头 / 体里用 {{Token}}，发送时替换</div>
               <div id="varRows" class="kv-list"></div>
             </div>
           </div>
@@ -159,9 +171,7 @@
     <!-- composer -->
     <footer class="composer">
       <div id="payloadWrap" class="payload-wrap">
-        <textarea id="payload" class="payload" spellcheck="false" placeholder='{"cmd":"ping"}  ·  Ctrl+Enter 发送'
-                  aria-autocomplete="list" aria-controls="sendMenu" aria-expanded="false"></textarea>
-        <div id="sendMenu" class="saved-menu send-menu hidden" role="listbox" aria-hidden="true"></div>
+        <textarea id="payload" class="payload" spellcheck="false" placeholder='{"cmd":"ping"}  ·  Ctrl+Enter 发送'></textarea>
       </div>
       <div class="composer-actions">
         <button id="btnSaveWS" class="btn ghost" type="button" title="保存当前发送，不发送（Ctrl+S）">保存</button>

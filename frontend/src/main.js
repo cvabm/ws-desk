@@ -16,6 +16,8 @@ import {
   SelectProfile,
   DeleteProfile,
   DeleteRequest,
+  ExportCatalog,
+  ImportCatalog,
   ListSessions,
   SearchSessions,
   LoadSession,
@@ -46,11 +48,13 @@ import {
   keepTemplate,
   keepTemplatesInRows,
   toCurl,
+  httpExchangeFailed,
 } from './http-ui.js';
 
 const $ = (id) => document.getElementById(id);
 const THEME_KEY = 'ws-desk-theme';
 const CATALOG_KEY = 'ws-desk-catalog';
+const DEFAULT_ENV = '默认';
 
 const HTTP_SCHEMES = new Set(['http', 'https']);
 const ALL_SCHEMES = new Set(['ws', 'wss', 'http', 'https']);
@@ -64,7 +68,7 @@ const el = {
   urlWrap: $('urlWrap'),
   urlPrefix: $('urlPrefix'),
   url: $('url'),
-  savedMenu: $('savedMenu'),
+
   urlModal: $('urlModal'),
   urlModalTitle: $('urlModalTitle'),
   urlModalInput: $('urlModalInput'),
@@ -95,6 +99,9 @@ const el = {
   reqTitle: $('reqTitle'),
   reqModule: $('reqModule'),
   reqDesc: $('reqDesc'),
+  envSelect: $('envSelect'),
+  btnEnvMore: $('btnEnvMore'),
+  envVars: $('envVars'),
   moduleWrap: $('moduleWrap'),
   moduleMenu: $('moduleMenu'),
   catalogPane: $('catalogPane'),
@@ -104,6 +111,8 @@ const el = {
   groupMenu: $('groupMenu'),
   btnCatalogToggle: $('btnCatalogToggle'),
   btnCatalogAdd: $('btnCatalogAdd'),
+  btnCatalogExport: $('btnCatalogExport'),
+  btnCatalogImport: $('btnCatalogImport'),
   btnSaveReq: $('btnSaveReq'),
   btnSaveWS: $('btnSaveWS'),
   promptModal: $('promptModal'),
@@ -133,7 +142,7 @@ const el = {
   btnFill: $('btnFill'),
   payloadWrap: $('payloadWrap'),
   payload: $('payload'),
-  sendMenu: $('sendMenu'),
+
   btnSend: $('btnSend'),
   btnFormat: $('btnFormat'),
   btnFormatHttp: $('btnFormatHttp'),
@@ -202,6 +211,9 @@ let paramRows = [emptyRow()];
 let headerRows = [emptyRow()];
 /** @type {{key:string,value:string,enabled:boolean}[]} */
 let varRows = [emptyRow()];
+/** @type {{name:string,variables:{key:string,value:string,enabled:boolean}[]}[]} */
+let environments = [{ name: DEFAULT_ENV, variables: [emptyRow()] }];
+let activeEnv = DEFAULT_ENV;
 /** @type {{key:string,value:string,enabled:boolean}[]} */
 let formRows = [emptyRow()];
 const recordDraft = {
@@ -213,6 +225,7 @@ let bodyType = 'json';
 let reqTab = 'body';
 let syncingQuery = false;
 let sending = false;
+let moduleRun = null;
 let persistTimer = 0;
 let suppressSessionReset = false;
 let activeProfileName = '';
@@ -462,10 +475,6 @@ async function selectMsg(id) {
 }
 
 function setHistoryMode(on, label = '') {
-  if (on) {
-    closeSavedMenu();
-    closeSendMenu();
-  }
   historyMode = on;
   el.app?.classList.toggle('history', on);
   el.histBanner.classList.toggle('hidden', !on);
@@ -629,10 +638,9 @@ function applyTransportFromURL() {
 function placePayload(http) {
   if (!el.payload) return;
   if (http && el.tabBody && el.payload.parentElement !== el.tabBody) {
-    closeSendMenu();
     el.tabBody.appendChild(el.payload);
   } else if (!http && el.payloadWrap && el.payload.parentElement !== el.payloadWrap) {
-    el.payloadWrap.insertBefore(el.payload, el.sendMenu || null);
+    el.payloadWrap.appendChild(el.payload);
   }
 }
 
@@ -643,6 +651,17 @@ function placeReqMeta(http) {
   } else if (!http && el.composer && el.reqMeta.parentElement !== el.composer) {
     el.composer.insertBefore(el.reqMeta, el.composer.firstChild);
   }
+  placeVarRows(http);
+}
+
+function placeVarRows(http) {
+  if (!el.varRows) return;
+  if (http && el.tabVars && el.varRows.parentElement !== el.tabVars) {
+    el.tabVars.appendChild(el.varRows);
+  } else if (!http && el.envVars && el.varRows.parentElement !== el.envVars) {
+    el.envVars.appendChild(el.varRows);
+  }
+  el.envVars?.classList.toggle('hidden', http);
 }
 
 function applyTransportUI(scheme) {
@@ -914,12 +933,205 @@ function loadHeadersFromProfile(p) {
   }
 }
 
-function loadVariablesFromProfile(p) {
-  if (Array.isArray(p?.variableList) && p.variableList.length) {
-    varRows = cloneRows(p.variableList);
-  } else {
-    varRows = [emptyRow()];
+function clipEnvName(name) {
+  return clipText(name, 80);
+}
+
+function envNames() {
+  return environments.map((e) => e.name);
+}
+
+function findEnv(name) {
+  return environments.find((e) => e.name === name) || null;
+}
+
+function envRowsOf(env) {
+  const rows = cloneRows(env?.variables);
+  return rows.length ? rows : [emptyRow()];
+}
+
+function envsFromProfile(p) {
+  const raw = Array.isArray(p?.environments) ? p.environments : [];
+  const out = [];
+  const seen = new Set();
+  for (const e of raw) {
+    const name = clipEnvName(e?.name);
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    const vars = cloneRows(e.variables);
+    out.push({ name, variables: vars.length ? vars : [emptyRow()] });
   }
+  if (!out.length) {
+    const vars = Array.isArray(p?.variableList) && p.variableList.length
+      ? cloneRows(p.variableList)
+      : [emptyRow()];
+    out.push({ name: DEFAULT_ENV, variables: vars.length ? vars : [emptyRow()] });
+  }
+  let active = clipEnvName(p?.activeEnv);
+  if (!out.some((e) => e.name === active)) active = out[0].name;
+  return { envs: out, active };
+}
+
+function flushActiveEnv() {
+  const name = clipEnvName(activeEnv) || DEFAULT_ENV;
+  activeEnv = name;
+  let env = findEnv(name);
+  if (!env) {
+    env = { name, variables: [] };
+    environments.push(env);
+  }
+  env.variables = cloneRows(varRows);
+}
+
+function snapshotEnvironments() {
+  flushActiveEnv();
+  return environments.map((e) => ({
+    name: e.name,
+    variables: cloneRows(e.variables),
+  }));
+}
+
+function renderEnvSelect() {
+  if (!el.envSelect) return;
+  const cur = activeEnv;
+  el.envSelect.innerHTML = '';
+  for (const e of environments) {
+    const opt = document.createElement('option');
+    opt.value = e.name;
+    opt.textContent = e.name;
+    el.envSelect.appendChild(opt);
+  }
+  if (environments.some((e) => e.name === cur)) el.envSelect.value = cur;
+  else if (environments.length) {
+    activeEnv = environments[0].name;
+    el.envSelect.value = activeEnv;
+  }
+}
+
+function applyEnv(name) {
+  flushActiveEnv();
+  const env = findEnv(name);
+  if (!env) return;
+  activeEnv = env.name;
+  varRows = envRowsOf(env);
+  renderEnvSelect();
+  renderRequestEditor();
+}
+
+async function onEnvSelectChange() {
+  const name = el.envSelect?.value || '';
+  if (!name || name === activeEnv) return;
+  applyEnv(name);
+  await persistProfile();
+}
+
+function uniqueEnvName(base) {
+  const used = new Set(envNames());
+  const stem = clipEnvName(base) || DEFAULT_ENV;
+  if (!used.has(stem)) return stem;
+  const short = clipText(stem, 76) || '环境';
+  for (let n = 2; n < 200; n++) {
+    const cand = clipText(`${short} ${n}`, 80);
+    if (cand && !used.has(cand)) return cand;
+  }
+  return clipText(`${short} ${Date.now()}`, 80);
+}
+
+async function addEnvironment() {
+  if (!requireURL()) return;
+  const raw = await askPrompt({
+    title: '新建环境',
+    placeholder: '例如 测试',
+    hint: '同一套变量名，换一套值。发送时用当前环境替换 {{Token}}。',
+    okText: '创建',
+    validate: (s) => {
+      const name = clipEnvName(s);
+      if (!name) return '请输入环境名';
+      if (envNames().includes(name)) return '已有同名环境';
+      return '';
+    },
+  });
+  if (raw == null) return;
+  const name = clipEnvName(raw);
+  if (!name) return;
+  flushActiveEnv();
+  environments.push({ name, variables: [emptyRow()] });
+  applyEnv(name);
+  await persistProfile();
+}
+
+async function duplicateEnvironment() {
+  if (!requireURL()) return;
+  flushActiveEnv();
+  const src = findEnv(activeEnv);
+  const name = uniqueEnvName(`${src?.name || DEFAULT_ENV} 副本`);
+  environments.push({ name, variables: cloneRows(src?.variables) });
+  applyEnv(name);
+  await persistProfile();
+}
+
+async function renameEnvironment() {
+  const from = activeEnv;
+  const raw = await askPrompt({
+    title: '重命名环境',
+    value: from,
+    placeholder: '环境名',
+    okText: '保存',
+    validate: (s) => {
+      const name = clipEnvName(s);
+      if (!name) return '请输入环境名';
+      if (name !== from && envNames().includes(name)) return '已有同名环境';
+      return '';
+    },
+  });
+  if (raw == null) return;
+  const to = clipEnvName(raw);
+  if (!to || to === from) return;
+  const env = findEnv(from);
+  if (env) env.name = to;
+  if (activeEnv === from) activeEnv = to;
+  renderEnvSelect();
+  await persistProfile();
+}
+
+async function deleteEnvironment() {
+  if (environments.length <= 1) {
+    setDetailEmpty('至少保留一个环境');
+    return;
+  }
+  const name = activeEnv;
+  const ok = await askConfirm({
+    title: '删除环境',
+    message: `确定删除环境「${name}」？其中的变量会一起删掉。`,
+    okText: '删除',
+  });
+  if (!ok) return;
+  environments = environments.filter((e) => e.name !== name);
+  const next = environments[0];
+  activeEnv = next.name;
+  varRows = envRowsOf(next);
+  renderEnvSelect();
+  renderRequestEditor();
+  await persistProfile();
+}
+
+function openEnvMenu() {
+  if (!el.btnEnvMore) return;
+  openCatalogMenu(el.btnEnvMore, 'env', [
+    { act: 'add', label: '新建环境' },
+    { act: 'duplicate', label: '复制环境' },
+    { act: 'rename', label: '重命名' },
+    { act: 'delete', label: '删除环境', danger: true },
+  ]);
+  el.btnEnvMore.setAttribute('aria-expanded', groupMenuOpen() ? 'true' : 'false');
+}
+
+function loadVariablesFromProfile(p) {
+  const { envs, active } = envsFromProfile(p);
+  environments = envs;
+  activeEnv = active;
+  varRows = envRowsOf(findEnv(active));
+  renderEnvSelect();
 }
 
 function loadBodyTypeFromProfile(p) {
@@ -1222,6 +1434,7 @@ async function applyProfile(p) {
   if (!p) return;
   if (!Array.isArray(p.modules)) p.modules = [];
   if (!Array.isArray(p.requests)) p.requests = [];
+  if (!Array.isArray(p.environments)) p.environments = [];
   setURL(p.url || p.name || '', p.name);
   el.protocol.value = p.protocol || '';
   const method = (p.method || 'GET').toUpperCase();
@@ -1243,10 +1456,7 @@ async function applyProfile(p) {
   if (p.name && [...(el.profile?.options || [])].some((o) => o.value === p.name)) {
     el.profile.value = p.name;
   }
-  closeSavedMenu();
-  closeSendMenu();
-  if (isHTTPMode()) renderSavedSelect(matchSavedId());
-  else renderSendSelect(matchSavedWSId());
+  setActiveSavedId(isHTTPMode() ? matchSavedId() : matchSavedWSId());
   loadReqMeta(currentSavedRequest());
   renderCatalog();
   await activateCurrent();
@@ -1278,6 +1488,8 @@ function clearEditor() {
   paramRows = [emptyRow()];
   headerRows = [emptyRow()];
   varRows = [emptyRow()];
+  environments = [{ name: DEFAULT_ENV, variables: [emptyRow()] }];
+  activeEnv = DEFAULT_ENV;
   formRows = [emptyRow()];
   lastSent = '';
   resetRecordDraft();
@@ -1286,11 +1498,9 @@ function clearEditor() {
   loadAuthFromProfile(null);
   loadBodyTypeFromProfile(null);
   applyTransportFromURL();
+  renderEnvSelect();
   renderRequestEditor();
-  closeSavedMenu();
-  closeSendMenu();
-  renderSavedSelect('');
-  renderSendSelect('');
+  setActiveSavedId('');
   loadReqMeta(null);
   renderCatalog();
 }
@@ -1298,11 +1508,7 @@ function clearEditor() {
 let confirmResolver = null;
 let promptResolver = null;
 let promptValidate = null;
-let savedSelectSig = '';
-let sendSelectSig = '';
 let activeSavedId = '';
-let savedFilterArmed = false;
-let sendFilterArmed = false;
 const catalogClosedModules = new Set();
 
 function confirmModalOpen() {
@@ -1453,8 +1659,6 @@ function validateNewURL(raw) {
 }
 
 function openUrlModal() {
-  closeSavedMenu();
-  closeSendMenu();
   if (el.urlModalTitle) el.urlModalTitle.textContent = profiles.length ? '增加地址' : '输入地址';
   if (el.urlModalInput) el.urlModalInput.value = '';
   setUrlModalError('');
@@ -1573,6 +1777,26 @@ function flashButton(btn, label, ms = 900) {
   clearTimeout(btn._flashTimer);
   btn._flashTimer = setTimeout(() => {
     btn.textContent = prev;
+  }, ms);
+}
+
+function catalogTitleText() {
+  if (moduleRun) return `跑 ${moduleRun.index}/${moduleRun.total}`;
+  const kw = catalogFilterKeyword();
+  const n = kw ? catalogSearchHits(kw).length : catalogRequests().length;
+  return n ? `接口 ${n}` : '接口';
+}
+
+function refreshCatalogTitle() {
+  if (el.catalogTitle) el.catalogTitle.textContent = catalogTitleText();
+}
+
+function flashCatalogTitle(text, ms = 1200) {
+  if (!el.catalogTitle) return;
+  el.catalogTitle.textContent = text;
+  clearTimeout(el.catalogTitle._flashTimer);
+  el.catalogTitle._flashTimer = setTimeout(() => {
+    if (!moduleRun) refreshCatalogTitle();
   }, ms);
 }
 
@@ -1744,11 +1968,6 @@ function onReqMetaInput() {
     req.title = currentReqTitle();
     req.module = currentReqModule();
     req.description = currentReqDesc();
-    if (isHTTPMode()) {
-      if (savedMenuOpen()) renderSavedSelect();
-    } else if (sendMenuOpen()) {
-      renderSendSelect();
-    }
     renderCatalog();
   }
   schedulePersist();
@@ -1788,12 +2007,20 @@ function profileModules() {
 }
 
 function currentModules() {
-  const names = new Set(profileModules());
+  const names = [];
+  const seen = new Set();
+  for (const raw of profileModules()) {
+    if (seen.has(raw)) continue;
+    seen.add(raw);
+    names.push(raw);
+  }
   for (const r of currentProfileRequests()) {
     const m = requestModuleName(r);
-    if (m) names.add(m);
+    if (!m || seen.has(m)) continue;
+    seen.add(m);
+    names.push(m);
   }
-  return [...names].sort((a, b) => a.localeCompare(b, 'zh'));
+  return names;
 }
 
 function ensureCurrentProfile() {
@@ -1801,7 +2028,7 @@ function ensureCurrentProfile() {
   if (!host) return null;
   let p = currentProfile();
   if (!p) {
-    p = { name: host, url: currentURL(), requests: [], modules: [] };
+    p = { name: host, url: currentURL(), requests: [], modules: [], environments: [], activeEnv: '' };
     profiles.push(p);
     profiles.sort((a, b) => String(a.name).localeCompare(String(b.name)));
   }
@@ -1929,51 +2156,64 @@ function catalogFilterKeyword() {
   return String(el.catalogFilter?.value || '').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
-function catalogMatches(r, kw) {
+function catalogMatches(r, kw, host) {
   if (!kw) return true;
-  if (isHTTPMode()) return savedRequestMatches(r, kw);
-  return savedWSMatches(r, kw);
+  return requestSearchHaystack(r, host).includes(kw);
+}
+
+function requestSearchHaystack(r, host) {
+  const base = isHTTPSaved(r) ? savedRequestHaystack(r) : savedWSHaystack(r);
+  return `${base} ${host || ''}`.replace(/\s+/g, ' ').trim();
+}
+
+function catalogHostName(p) {
+  return String(p?.name || profileNameFromURL(p?.url) || '').trim();
+}
+
+function currentCatalogHost() {
+  return profileNameFromURL(currentURL()) || activeProfileName || el.profile?.value || '';
+}
+
+function catalogSearchHits(kw) {
+  const hits = [];
+  for (const p of profiles || []) {
+    const host = catalogHostName(p);
+    if (!host) continue;
+    for (const r of p.requests || []) {
+      if (!r?.id) continue;
+      if (kw && !catalogMatches(r, kw, host)) continue;
+      hits.push({ host, req: r });
+    }
+  }
+  return hits;
+}
+
+function groupCatalogHits(hits) {
+  const map = new Map();
+  for (const hit of hits) {
+    if (!map.has(hit.host)) map.set(hit.host, []);
+    map.get(hit.host).push(hit.req);
+  }
+  return [...map.entries()].map(([host, items]) => ({ host, items }));
 }
 
 function catalogItemLabel(r) {
-  if (isHTTPMode()) {
+  if (isHTTPSaved(r)) {
     return requestDisplayTitle(r) || requestItemPath(r) || r?.name || '';
   }
   return requestDisplayTitle(r) || wsCmdLabel(r) || oneLinePreview(r?.body || r?.name || '', 48);
 }
 
-function compareCatalogItems(a, b) {
-  const at = catalogItemLabel(a);
-  const bt = catalogItemLabel(b);
-  const c = String(at).localeCompare(String(bt), 'zh');
-  if (c) return c;
-  return String(a?.name || '').localeCompare(String(b?.name || ''), 'zh');
-}
-
 function groupCatalogRequests(reqs) {
   const map = new Map();
   for (const name of currentModules()) map.set(name, []);
+  map.set('', []);
   for (const r of reqs) {
     const key = requestModuleName(r);
     if (!map.has(key)) map.set(key, []);
     map.get(key).push(r);
   }
-  for (const items of map.values()) items.sort(compareCatalogItems);
-  const kw = catalogFilterKeyword();
-  const keys = [...map.keys()].sort((a, b) => {
-    if (!a) return 1;
-    if (!b) return -1;
-    return a.localeCompare(b, 'zh');
-  });
-  return keys
-    .filter((module) => {
-      const items = map.get(module) || [];
-      if (items.length) return true;
-      if (!module) return false;
-      if (kw) return module.toLowerCase().includes(kw);
-      return true;
-    })
-    .map((module) => ({ module, items: map.get(module) }));
+  return [...map.keys()].map((module) => ({ module, items: map.get(module) }));
 }
 
 function appendCatalogAddModule() {
@@ -1988,6 +2228,8 @@ function makeCatalogGroupHead(group, kw) {
   const head = document.createElement('div');
   head.className = 'catalog-group';
   head.dataset.module = group.module;
+  head.dataset.closeKey = group.module || '';
+  if (!kw && group.module) head.draggable = true;
   const closed = !kw && catalogClosedModules.has(group.module);
   const caret = document.createElement('span');
   caret.className = 'catalog-caret';
@@ -2000,11 +2242,12 @@ function makeCatalogGroupHead(group, kw) {
   count.textContent = String(group.items.length);
   const more = document.createElement('button');
   more.type = 'button';
-  more.className = 'catalog-group-more';
+  more.className = 'catalog-more catalog-group-more';
   more.title = '模块菜单';
   more.setAttribute('aria-label', group.module ? `「${group.module}」菜单` : '未分组菜单');
   more.setAttribute('aria-haspopup', 'menu');
   more.setAttribute('aria-expanded', 'false');
+  more.draggable = false;
   more.textContent = '⋯';
   head.appendChild(caret);
   head.appendChild(name);
@@ -2013,25 +2256,44 @@ function makeCatalogGroupHead(group, kw) {
   return { head, closed };
 }
 
-let groupMenuModule = null;
+function makeCatalogHostHead(group, currentHost) {
+  const head = document.createElement('div');
+  head.className = 'catalog-group host' + (group.host === currentHost ? ' current' : '');
+  head.dataset.host = group.host;
+  head.dataset.closeKey = `host:${group.host}`;
+  const closed = catalogClosedModules.has(head.dataset.closeKey);
+  const caret = document.createElement('span');
+  caret.className = 'catalog-caret';
+  caret.textContent = closed ? '▸' : '▾';
+  const name = document.createElement('span');
+  name.className = 'catalog-group-name';
+  name.textContent = group.host;
+  name.title = group.host;
+  const count = document.createElement('span');
+  count.className = 'catalog-group-count';
+  count.textContent = String(group.items.length);
+  head.appendChild(caret);
+  head.appendChild(name);
+  head.appendChild(count);
+  return { head, closed };
+}
+
+let catalogMenuKey = '';
+let catalogDrag = null;
+let catalogDidDrag = false;
 
 function groupMenuOpen() {
   return Boolean(el.groupMenu && !el.groupMenu.classList.contains('hidden'));
 }
 
 function closeGroupMenu() {
-  if (!groupMenuOpen() && !groupMenuModule) {
-    for (const btn of el.catalogList?.querySelectorAll('.catalog-group-more[aria-expanded="true"]') || []) {
-      btn.setAttribute('aria-expanded', 'false');
-    }
-    return;
-  }
   el.groupMenu?.classList.add('hidden');
   el.groupMenu?.setAttribute('aria-hidden', 'true');
-  groupMenuModule = null;
-  for (const btn of el.catalogList?.querySelectorAll('.catalog-group-more[aria-expanded="true"]') || []) {
+  catalogMenuKey = '';
+  for (const btn of el.catalogList?.querySelectorAll('.catalog-more[aria-expanded="true"]') || []) {
     btn.setAttribute('aria-expanded', 'false');
   }
+  el.btnEnvMore?.setAttribute('aria-expanded', 'false');
 }
 
 function appendGroupMenuItem(act, label, danger) {
@@ -2068,34 +2330,63 @@ function placeGroupMenu(anchor) {
   menu.style.left = `${Math.round(left)}px`;
 }
 
-function openGroupMenu(anchor, module) {
-  if (!el.groupMenu) return;
-  if (groupMenuOpen() && groupMenuModule === module) {
+function openCatalogMenu(anchor, key, items) {
+  if (!el.groupMenu || !anchor) return;
+  if (groupMenuOpen() && catalogMenuKey === key) {
     closeGroupMenu();
     return;
   }
-  groupMenuModule = module;
+  catalogMenuKey = key;
   el.groupMenu.innerHTML = '';
-  appendGroupMenuItem('add', '新建接口');
-  if (module) {
-    appendGroupMenuItem('rename', '重命名');
-    appendGroupMenuItem('delete', '删除模块', true);
-  }
+  for (const item of items) appendGroupMenuItem(item.act, item.label, item.danger);
   el.groupMenu.classList.remove('hidden');
   el.groupMenu.setAttribute('aria-hidden', 'false');
-  for (const btn of el.catalogList?.querySelectorAll('.catalog-group-more') || []) {
+  for (const btn of el.catalogList?.querySelectorAll('.catalog-more') || []) {
     btn.setAttribute('aria-expanded', btn === anchor ? 'true' : 'false');
   }
   placeGroupMenu(anchor);
+}
+
+function openGroupMenu(anchor, module) {
+  const items = [{ act: 'add', label: '新建接口' }];
+  if (isHTTPMode()) items.push({ act: 'run', label: '跑一遍' });
+  if (module) {
+    items.push({ act: 'rename', label: '重命名' });
+    items.push({ act: 'delete', label: '删除模块', danger: true });
+  }
+  openCatalogMenu(anchor, `group\t${module}`, items);
+}
+
+function openItemMenu(anchor, id) {
+  if (!id) return;
+  openCatalogMenu(anchor, `item\t${id}`, [
+    { act: 'duplicate', label: '复制' },
+    { act: 'delete-item', label: '删除', danger: true },
+  ]);
 }
 
 function onGroupMenuClick(e) {
   const item = e.target?.closest?.('[data-act]');
   if (!item || !el.groupMenu?.contains(item)) return;
   const act = item.dataset.act;
-  const module = groupMenuModule || '';
+  const key = catalogMenuKey;
   closeGroupMenu();
+  if (key === 'env') {
+    if (act === 'add') addEnvironment();
+    else if (act === 'duplicate') duplicateEnvironment();
+    else if (act === 'rename') renameEnvironment();
+    else if (act === 'delete') deleteEnvironment();
+    return;
+  }
+  if (key.startsWith('item\t')) {
+    const id = key.slice(5);
+    if (act === 'duplicate') duplicateCatalogRequest(id);
+    else if (act === 'delete-item') deleteNamedRequest(id);
+    return;
+  }
+  const module = key.startsWith('group\t') ? key.slice(6) : '';
   if (act === 'add') addCatalogRequest(module);
+  else if (act === 'run') runCatalogModule(module);
   else if (act === 'rename' && module) renameCatalogModule(module);
   else if (act === 'delete' && module) deleteCatalogModule(module);
 }
@@ -2104,10 +2395,13 @@ function renderCatalog() {
   closeGroupMenu();
   fillModuleList();
   if (!el.catalogList) return;
-  const all = catalogRequests();
   const kw = catalogFilterKeyword();
-  const reqs = kw ? all.filter((r) => catalogMatches(r, kw)) : all;
-  if (el.catalogTitle) el.catalogTitle.textContent = all.length ? `接口 ${all.length}` : '接口';
+  if (kw) {
+    renderCatalogSearch(kw);
+    return;
+  }
+  const all = catalogRequests();
+  refreshCatalogTitle();
   el.catalogList.innerHTML = '';
   if (!currentProfile() && !profileNameFromURL(currentURL())) {
     const empty = document.createElement('div');
@@ -2116,7 +2410,7 @@ function renderCatalog() {
     el.catalogList.appendChild(empty);
     return;
   }
-  const groups = groupCatalogRequests(reqs);
+  const groups = groupCatalogRequests(all);
   if (!all.length && !groups.length) {
     const empty = document.createElement('div');
     empty.className = 'catalog-empty';
@@ -2127,43 +2421,70 @@ function renderCatalog() {
     appendCatalogAddModule();
     return;
   }
-  if (!reqs.length && !groups.length) {
+  for (const group of groups) {
+    const wrap = document.createElement('div');
+    wrap.className = 'catalog-group-wrap';
+    wrap.dataset.module = group.module;
+    const { head, closed } = makeCatalogGroupHead(group, '');
+    wrap.appendChild(head);
+    const box = document.createElement('div');
+    box.className = 'catalog-items' + (closed ? ' hidden' : '');
+    for (const r of group.items) {
+      box.appendChild(makeCatalogItem(r, '', currentCatalogHost()));
+    }
+    wrap.appendChild(box);
+    el.catalogList.appendChild(wrap);
+  }
+  appendCatalogAddModule();
+}
+
+function renderCatalogSearch(kw) {
+  const hits = catalogSearchHits(kw);
+  refreshCatalogTitle();
+  el.catalogList.innerHTML = '';
+  if (!hits.length) {
     const empty = document.createElement('div');
     empty.className = 'catalog-empty';
     empty.textContent = `没有匹配 “${el.catalogFilter?.value?.trim() || kw}”`;
     el.catalogList.appendChild(empty);
     return;
   }
-  for (const group of groups) {
+  const current = currentCatalogHost();
+  for (const group of groupCatalogHits(hits)) {
     const wrap = document.createElement('div');
     wrap.className = 'catalog-group-wrap';
-    const { head, closed } = makeCatalogGroupHead(group, kw);
+    wrap.dataset.host = group.host;
+    const { head, closed } = makeCatalogHostHead(group, current);
     wrap.appendChild(head);
     const box = document.createElement('div');
     box.className = 'catalog-items' + (closed ? ' hidden' : '');
     for (const r of group.items) {
-      box.appendChild(makeCatalogItem(r, kw));
+      box.appendChild(makeCatalogItem(r, kw, group.host));
     }
     wrap.appendChild(box);
     el.catalogList.appendChild(wrap);
   }
-  if (!kw) appendCatalogAddModule();
 }
 
-function makeCatalogItem(r, kw) {
+function makeCatalogItem(r, kw, host) {
   const item = document.createElement('div');
-  item.className = 'catalog-item' + (r.id === activeSavedId ? ' on' : '');
+  const here = !host || host === currentCatalogHost();
+  item.className = 'catalog-item'
+    + (here && r.id === activeSavedId ? ' on' : '')
+    + (moduleRun?.id === r.id ? ' running' : '');
   item.dataset.id = r.id;
+  if (host) item.dataset.host = host;
+  if (!kw && r.id) item.draggable = true;
   const main = document.createElement('div');
   main.className = 'catalog-item-main';
   const line = document.createElement('div');
   line.className = 'catalog-item-line';
-  if (isHTTPMode()) {
+  if (isHTTPSaved(r)) {
     const method = String(r.method || 'GET').toUpperCase();
     const path = requestItemPath(r);
     const title = requestDisplayTitle(r);
     const desc = requestDescription(r);
-    item.title = [title, `${method} ${path}`, desc].filter(Boolean).join('\n');
+    item.title = [host && host !== currentCatalogHost() ? host : '', title, `${method} ${path}`, desc].filter(Boolean).join('\n');
     const m = document.createElement('span');
     m.className = `saved-item-method ${method.toLowerCase()}`;
     fillHighlighted(m, method, kw);
@@ -2174,6 +2495,7 @@ function makeCatalogItem(r, kw) {
     line.appendChild(head);
     main.appendChild(line);
     const subParts = [];
+    if (kw && requestModuleName(r)) subParts.push(requestModuleName(r));
     if (title) subParts.push(path);
     if (desc) subParts.push(desc);
     if (subParts.length) {
@@ -2187,7 +2509,7 @@ function makeCatalogItem(r, kw) {
     const cmd = wsCmdLabel(r);
     const preview = oneLinePreview(r.body || r.name || '', 64);
     const desc = requestDescription(r);
-    item.title = [title, cmd, preview, desc].filter(Boolean).join('\n');
+    item.title = [host && host !== currentCatalogHost() ? host : '', title, cmd, preview, desc].filter(Boolean).join('\n');
     const headText = title || cmd || preview;
     if (headText) {
       const n = document.createElement('span');
@@ -2203,6 +2525,7 @@ function makeCatalogItem(r, kw) {
     }
     if (line.childNodes.length) main.appendChild(line);
     const subParts = [];
+    if (kw && requestModuleName(r)) subParts.push(requestModuleName(r));
     if (preview && preview !== headText) subParts.push(preview);
     if (desc) subParts.push(desc);
     if (subParts.length) {
@@ -2213,15 +2536,237 @@ function makeCatalogItem(r, kw) {
     }
   }
   item.appendChild(main);
-  item.appendChild(makeSavedDelButton(catalogItemLabel(r)));
+  if (!kw) {
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'catalog-more catalog-item-more';
+    more.title = '接口菜单';
+    more.setAttribute('aria-label', `${catalogItemLabel(r)} 菜单`);
+    more.setAttribute('aria-haspopup', 'menu');
+    more.setAttribute('aria-expanded', 'false');
+    more.draggable = false;
+    more.textContent = '⋯';
+    item.appendChild(more);
+  }
   return item;
 }
 
+function clearCatalogDropMarks() {
+  for (const node of el.catalogList?.querySelectorAll('.drop-before, .drop-after, .drop-end, .drop-into') || []) {
+    node.classList.remove('drop-before', 'drop-after', 'drop-end', 'drop-into');
+  }
+}
+
+function clearCatalogDragState() {
+  clearCatalogDropMarks();
+  for (const node of el.catalogList?.querySelectorAll('.dragging') || []) {
+    node.classList.remove('dragging');
+  }
+}
+
+function catalogDropTarget() {
+  const into = el.catalogList?.querySelector('.drop-into');
+  if (into) return { node: into, where: 'into' };
+  const before = el.catalogList?.querySelector('.drop-before');
+  if (before) return { node: before, where: 'before' };
+  const after = el.catalogList?.querySelector('.drop-after');
+  if (after) return { node: after, where: 'after' };
+  const end = el.catalogList?.querySelector('.drop-end');
+  if (end) return { node: end, where: 'end' };
+  return null;
+}
+
+function moveModule(from, to, before) {
+  if (!from || !to || from === to) return false;
+  const p = ensureCurrentProfile();
+  if (!p) return false;
+  const list = currentModules().slice();
+  const fi = list.indexOf(from);
+  if (fi < 0 || list.indexOf(to) < 0) return false;
+  list.splice(fi, 1);
+  let ti = list.indexOf(to);
+  if (ti < 0) return false;
+  if (!before) ti += 1;
+  list.splice(ti, 0, from);
+  p.modules = list;
+  return true;
+}
+
+function moveRequestInModule(id, targetId, before) {
+  const p = ensureCurrentProfile();
+  if (!p || !id) return false;
+  const src = p.requests.find((r) => r.id === id);
+  if (!src) return false;
+  const module = requestModuleName(src);
+  const group = p.requests.filter((r) => requestModuleName(r) === module);
+  const ids = group.map((r) => r.id).filter((x) => x !== id);
+  let at = targetId ? ids.indexOf(targetId) : ids.length;
+  if (targetId && at < 0) return false;
+  if (targetId && !before) at += 1;
+  if (at < 0) at = ids.length;
+  ids.splice(at, 0, id);
+  if (ids.join('\0') === group.map((r) => r.id).join('\0')) return false;
+  const byId = new Map(group.map((r) => [r.id, r]));
+  const nextGroup = ids.map((x) => byId.get(x)).filter(Boolean);
+  let i = 0;
+  p.requests = p.requests.map((r) => (requestModuleName(r) === module ? nextGroup[i++] : r));
+  return true;
+}
+
+function moveRequestToModule(id, destModule, targetId, before) {
+  const p = ensureCurrentProfile();
+  if (!p || !id) return false;
+  destModule = clipText(destModule || '', 80);
+  const src = p.requests.find((r) => r.id === id);
+  if (!src) return false;
+  if (requestModuleName(src) === destModule) {
+    return moveRequestInModule(id, targetId, before);
+  }
+  src.module = destModule;
+  if (id === activeSavedId && el.reqModule) el.reqModule.value = destModule;
+  const others = p.requests.filter((r) => r.id !== id);
+  const destIds = others.filter((r) => requestModuleName(r) === destModule).map((r) => r.id);
+  let at = targetId ? destIds.indexOf(targetId) : destIds.length;
+  if (targetId && at < 0) at = destIds.length;
+  if (targetId && !before) at += 1;
+  if (at < 0 || at > destIds.length) at = destIds.length;
+  destIds.splice(at, 0, id);
+  const byId = new Map(p.requests.map((r) => [r.id, r]));
+  let emitted = false;
+  const next = [];
+  for (const r of others) {
+    if (requestModuleName(r) === destModule) {
+      if (!emitted) {
+        for (const did of destIds) {
+          const row = byId.get(did);
+          if (row) next.push(row);
+        }
+        emitted = true;
+      }
+      continue;
+    }
+    next.push(r);
+  }
+  if (!emitted) {
+    const row = byId.get(id);
+    if (row) next.push(row);
+  }
+  p.requests = next;
+  return true;
+}
+
+function onCatalogDragStart(e) {
+  if (moduleRun || catalogFilterKeyword() || e.target?.closest?.('.catalog-more, .catalog-add-module')) {
+    e.preventDefault();
+    return;
+  }
+  const item = e.target?.closest?.('.catalog-item');
+  const group = e.target?.closest?.('.catalog-group');
+  if (item?.dataset?.id && item.draggable) {
+    catalogDrag = {
+      type: 'item',
+      id: item.dataset.id,
+      module: item.closest('.catalog-group-wrap')?.dataset?.module || '',
+    };
+    item.classList.add('dragging');
+  } else if (group?.draggable && group.dataset.module) {
+    catalogDrag = { type: 'group', module: group.dataset.module };
+    group.classList.add('dragging');
+    group.closest('.catalog-group-wrap')?.classList.add('dragging');
+  } else {
+    e.preventDefault();
+    return;
+  }
+  catalogDidDrag = true;
+  closeGroupMenu();
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', catalogDrag.type);
+}
+
+function onCatalogDragOver(e) {
+  if (!catalogDrag || catalogFilterKeyword()) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  clearCatalogDropMarks();
+  const wrap = e.target?.closest?.('.catalog-group-wrap');
+  if (catalogDrag.type === 'group') {
+    const to = wrap?.dataset?.module || '';
+    if (!to || to === catalogDrag.module) return;
+    const rect = wrap.getBoundingClientRect();
+    wrap.classList.add(e.clientY < rect.top + rect.height / 2 ? 'drop-before' : 'drop-after');
+    return;
+  }
+  if (!wrap) return;
+  const item = e.target?.closest?.('.catalog-item');
+  if (item?.dataset?.id === catalogDrag.id) return;
+  if (item?.dataset?.id) {
+    const rect = item.getBoundingClientRect();
+    item.classList.add(e.clientY < rect.top + rect.height / 2 ? 'drop-before' : 'drop-after');
+    return;
+  }
+  const destModule = wrap.dataset.module || '';
+  if (destModule !== catalogDrag.module || e.target?.closest?.('.catalog-group')) {
+    wrap.classList.add('drop-into');
+    return;
+  }
+  wrap.querySelector('.catalog-items')?.classList.add('drop-end');
+}
+
+function onCatalogDrop(e) {
+  if (!catalogDrag || catalogFilterKeyword()) return;
+  e.preventDefault();
+  const dest = catalogDropTarget();
+  let changed = false;
+  if (catalogDrag.type === 'group') {
+    const wrap = dest?.node?.closest?.('.catalog-group-wrap');
+    const to = wrap?.dataset?.module || '';
+    if (to) changed = moveModule(catalogDrag.module, to, dest.where === 'before');
+  } else {
+    const wrap = dest?.node?.closest?.('.catalog-group-wrap');
+    const destModule = wrap ? wrap.dataset.module || '' : '';
+    if (dest?.where === 'into' || dest?.where === 'end') {
+      changed = moveRequestToModule(catalogDrag.id, destModule, '', true);
+    } else {
+      const item = dest?.node?.closest?.('.catalog-item');
+      const targetId = item?.dataset?.id || '';
+      if (targetId) changed = moveRequestToModule(catalogDrag.id, destModule, targetId, dest.where === 'before');
+    }
+    if (changed) catalogClosedModules.delete(destModule);
+  }
+  clearCatalogDragState();
+  catalogDrag = null;
+  if (!changed) return;
+  renderCatalog();
+  persistProfile();
+}
+
+function onCatalogDragEnd() {
+  clearCatalogDragState();
+  catalogDrag = null;
+  setTimeout(() => { catalogDidDrag = false; }, 0);
+}
+
 function onCatalogClick(e) {
+  if (catalogDidDrag) {
+    e.preventDefault();
+    catalogDidDrag = false;
+    return;
+  }
+  if (moduleRun && e.target?.closest?.('.catalog-item, .catalog-more, .catalog-add-module')) {
+    return;
+  }
   const addMod = e.target?.closest?.('.catalog-add-module');
   if (addMod) {
     e.preventDefault();
     addCatalogModule();
+    return;
+  }
+  const itemMore = e.target?.closest?.('.catalog-item-more');
+  if (itemMore) {
+    e.preventDefault();
+    e.stopPropagation();
+    const id = itemMore.closest('.catalog-item')?.dataset?.id || '';
+    openItemMenu(itemMore, id);
     return;
   }
   const more = e.target?.closest?.('.catalog-group-more');
@@ -2234,26 +2779,29 @@ function onCatalogClick(e) {
   }
   const group = e.target?.closest?.('.catalog-group');
   if (group && el.catalogList?.contains(group)) {
-    const key = group.dataset.module || '';
+    const key = group.dataset.closeKey || group.dataset.module || '';
     if (catalogClosedModules.has(key)) catalogClosedModules.delete(key);
     else catalogClosedModules.add(key);
     renderCatalog();
     return;
   }
-  const del = e.target?.closest?.('.saved-item-del');
-  if (del) {
-    e.preventDefault();
-    e.stopPropagation();
-    const id = del.closest('.catalog-item')?.dataset?.id;
-    if (id) deleteNamedRequest(id);
-    return;
-  }
   const item = e.target?.closest?.('.catalog-item');
-  if (item?.dataset?.id) pickCatalogRequest(item.dataset.id);
+  if (item?.dataset?.id) pickCatalogRequest(item.dataset.id, item.dataset.host || '');
 }
 
-async function pickCatalogRequest(id) {
-  if (isHTTPMode()) await pickSavedRequest(id);
+async function pickCatalogRequest(id, host) {
+  if (moduleRun) return;
+  const target = String(host || currentCatalogHost() || '').trim();
+  const current = currentCatalogHost();
+  if (target && target !== current) {
+    await persistProfile();
+    const p = profiles.find((x) => x.name === target);
+    if (!p) return;
+    await applyProfile(p);
+  }
+  const req = (currentProfileRequests() || []).find((r) => r.id === id);
+  if (!req) return;
+  if (isHTTPSaved(req)) await pickSavedRequest(id);
   else await pickSavedWSMessage(id);
   renderCatalog();
 }
@@ -2315,8 +2863,6 @@ function syncActiveRequestSnapshot() {
 
 async function addCatalogRequest(moduleName) {
   if (!requireURL()) return;
-  closeSavedMenu();
-  closeSendMenu();
   if (activeSavedId) syncActiveRequestSnapshot();
   const p = ensureCurrentProfile();
   if (!p) return;
@@ -2327,9 +2873,33 @@ async function addCatalogRequest(moduleName) {
   p.requests = (p.requests || []).concat(req);
   if (isHTTPMode()) applySavedRequest(req);
   else applySavedWSMessage(req);
-  activeSavedId = id;
-  if (isHTTPMode()) renderSavedSelect(id);
-  else renderSendSelect(id);
+  setActiveSavedId(id);
+  renderCatalog();
+  await persistProfile();
+  el.reqTitle?.focus();
+}
+
+function cloneSavedRequest(src) {
+  const copy = JSON.parse(JSON.stringify(src || {}));
+  copy.id = newRequestId();
+  copy.updatedAt = Date.now();
+  const base = String(src?.title || requestDisplayTitle(src) || src?.name || (isHTTPMode() ? '接口' : '消息')).trim();
+  copy.title = clipText(`${base} 副本`, 80);
+  return copy;
+}
+
+async function duplicateCatalogRequest(id) {
+  if (!requireURL()) return;
+  if (activeSavedId) syncActiveRequestSnapshot();
+  const p = ensureCurrentProfile();
+  if (!p) return;
+  const i = (p.requests || []).findIndex((r) => r.id === id);
+  if (i < 0) return;
+  const copy = cloneSavedRequest(p.requests[i]);
+  p.requests.splice(i + 1, 0, copy);
+  if (isHTTPMode()) applySavedRequest(copy);
+  else applySavedWSMessage(copy);
+  setActiveSavedId(copy.id);
   renderCatalog();
   await persistProfile();
   el.reqTitle?.focus();
@@ -2409,13 +2979,8 @@ async function saveCurrentRequest() {
   const module = currentReqModule();
   if (module) rememberModule(module);
   await persistProfile();
-  if (isHTTPMode()) {
-    flashButton(el.btnSaveReq, '已保存');
-    renderSavedSelect(activeSavedId);
-  } else {
-    flashButton(el.btnSaveWS, '已保存');
-    renderSendSelect(activeSavedId);
-  }
+  flashButton(isHTTPMode() ? el.btnSaveReq : el.btnSaveWS, '已保存');
+  setActiveSavedId(activeSavedId);
   loadReqMeta(currentSavedRequest());
   renderCatalog();
 }
@@ -2425,78 +2990,11 @@ function currentSavedRequest() {
   return currentProfileRequests().find((r) => r.id === activeSavedId) || null;
 }
 
-function savedMenuOpen() {
-  return Boolean(el.savedMenu && !el.savedMenu.classList.contains('hidden'));
-}
-
-function canOpenSavedMenu() {
-  if (!isHTTPMode()) return false;
-  if (historyMode) return false;
-  if (confirmModalOpen() || urlModalOpen() || recordModalOpen() || promptModalOpen()) return false;
-  if (!urlPrefix || el.url?.readOnly) return false;
-  return true;
-}
-
-function canOpenSendMenu() {
-  if (isHTTPMode()) return false;
-  if (historyMode) return false;
-  if (confirmModalOpen() || urlModalOpen() || recordModalOpen() || promptModalOpen()) return false;
-  if (!profileNameFromURL(currentURL()) && !activeProfileName) return false;
-  return true;
-}
-
-function savedFilterKeyword() {
-  if (!savedFilterArmed) return '';
-  return String(el.url?.value || '').replace(/\s+/g, ' ').trim().toLowerCase();
-}
-
-function closeSavedMenu() {
-  el.savedMenu?.classList.add('hidden');
-  el.savedMenu?.setAttribute('aria-hidden', 'true');
-  el.url?.setAttribute('aria-expanded', 'false');
-  el.urlWrap?.classList.remove('open');
-}
-
-function sendMenuOpen() {
-  return Boolean(el.sendMenu && !el.sendMenu.classList.contains('hidden'));
-}
-
-function closeSendMenu() {
-  el.sendMenu?.classList.add('hidden');
-  el.sendMenu?.setAttribute('aria-hidden', 'true');
-  el.payload?.setAttribute('aria-expanded', 'false');
-  el.payloadWrap?.classList.remove('open');
-}
-
-function openSavedMenu() {
-  if (!el.savedMenu || !canOpenSavedMenu()) return;
-  flushReqMeta();
-  const reqs = currentHTTPRequests();
-  if (!reqs.length && !savedFilterKeyword()) return;
-  closeSendMenu();
-  renderSavedSelect(activeSavedId);
-  el.savedMenu.classList.remove('hidden');
-  el.savedMenu.setAttribute('aria-hidden', 'false');
-  el.url?.setAttribute('aria-expanded', 'true');
-  el.urlWrap?.classList.add('open');
-}
-
-function sendFilterKeyword() {
-  if (!sendFilterArmed) return '';
-  return String(el.payload?.value || '').replace(/\s+/g, ' ').trim().toLowerCase();
-}
-
-function openSendMenu() {
-  if (!el.sendMenu || !canOpenSendMenu()) return;
-  flushReqMeta();
-  const reqs = currentWSMessages();
-  if (!reqs.length && !sendFilterKeyword()) return;
-  closeSavedMenu();
-  renderSendSelect(activeSavedId);
-  el.sendMenu.classList.remove('hidden');
-  el.sendMenu.setAttribute('aria-hidden', 'false');
-  el.payload?.setAttribute('aria-expanded', 'true');
-  el.payloadWrap?.classList.add('open');
+function setActiveSavedId(id) {
+  if (id !== undefined) activeSavedId = id || '';
+  const reqs = isHTTPMode() ? currentHTTPRequests() : currentWSMessages();
+  if (activeSavedId && !reqs.some((r) => r.id === activeSavedId)) activeSavedId = '';
+  return activeSavedId;
 }
 
 function urlPathname(url) {
@@ -2620,10 +3118,6 @@ function applySavedWSMessage(req) {
   return true;
 }
 
-function savedSelectSignature(reqs) {
-  return (reqs || []).map((r) => `${r.id}\t${r.name || ''}\t${r.title || ''}\t${r.description || ''}\t${r.module || ''}`).join('\n');
-}
-
 function requestItemPath(r) {
   const rest = splitLockedURL(r?.url || '').rest;
   return rest || urlPathname(r?.url) || '/';
@@ -2669,82 +3163,6 @@ function fillHighlighted(node, text, kw) {
   if (from < raw.length) node.appendChild(document.createTextNode(raw.slice(from)));
 }
 
-function appendSavedEmpty(menu, text) {
-  const empty = document.createElement('div');
-  empty.className = 'saved-empty';
-  empty.textContent = text;
-  menu.appendChild(empty);
-}
-
-function makeSavedDelButton(label) {
-  const del = document.createElement('button');
-  del.className = 'saved-item-del';
-  del.type = 'button';
-  del.tabIndex = -1;
-  del.title = '删除';
-  del.setAttribute('aria-label', `删除 ${label}`);
-  del.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
-  return del;
-}
-
-function renderSavedSelect(selectedId) {
-  if (selectedId !== undefined) {
-    activeSavedId = selectedId || '';
-  }
-  const reqs = currentHTTPRequests();
-  if (activeSavedId && !reqs.some((r) => r.id === activeSavedId)) activeSavedId = '';
-  savedSelectSig = savedSelectSignature(reqs);
-  if (!el.savedMenu) return;
-  const kw = savedFilterKeyword();
-  const shown = kw ? reqs.filter((r) => savedRequestMatches(r, kw)) : reqs;
-  el.savedMenu.innerHTML = '';
-  if (!reqs.length) {
-    appendSavedEmpty(el.savedMenu, '点左侧 + 新建接口，或发送后自动收录');
-    return;
-  }
-  if (!shown.length) {
-    appendSavedEmpty(el.savedMenu, `没有匹配 “${el.url?.value?.trim() || kw}”`);
-    return;
-  }
-  for (const r of shown) {
-    const item = document.createElement('div');
-    item.className = 'saved-item' + (r.id === activeSavedId ? ' on' : '');
-    item.dataset.id = r.id;
-    item.setAttribute('role', 'option');
-    item.setAttribute('aria-selected', r.id === activeSavedId ? 'true' : 'false');
-    const method = String(r.method || 'GET').toUpperCase();
-    const path = requestItemPath(r);
-    const title = requestDisplayTitle(r);
-    const desc = requestDescription(r);
-    item.title = [title, `${method} ${path}`, desc].filter(Boolean).join('\n');
-    const main = document.createElement('div');
-    main.className = 'saved-item-main';
-    const line = document.createElement('div');
-    line.className = 'saved-item-line';
-    const m = document.createElement('span');
-    m.className = `saved-item-method ${method.toLowerCase()}`;
-    fillHighlighted(m, method, kw);
-    line.appendChild(m);
-    const head = document.createElement('span');
-    head.className = title ? 'saved-item-title' : 'saved-item-path';
-    fillHighlighted(head, title || path, kw);
-    line.appendChild(head);
-    main.appendChild(line);
-    const subParts = [];
-    if (title) subParts.push(path);
-    if (desc) subParts.push(desc);
-    if (subParts.length) {
-      const sub = document.createElement('div');
-      sub.className = 'saved-item-sub';
-      fillHighlighted(sub, subParts.join(' · '), kw);
-      main.appendChild(sub);
-    }
-    item.appendChild(main);
-    item.appendChild(makeSavedDelButton(title || `${method} ${path}`));
-    el.savedMenu.appendChild(item);
-  }
-}
-
 function savedWSHaystack(r) {
   return `${r?.name || ''} ${r?.title || ''} ${r?.description || ''} ${r?.module || ''} ${r?.body || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
 }
@@ -2752,86 +3170,6 @@ function savedWSHaystack(r) {
 function savedWSMatches(r, kw) {
   if (!kw) return true;
   return savedWSHaystack(r).includes(kw);
-}
-
-function renderSendSelect(selectedId) {
-  if (selectedId !== undefined) {
-    activeSavedId = selectedId || '';
-  }
-  const reqs = currentWSMessages();
-  if (activeSavedId && !reqs.some((r) => r.id === activeSavedId)) activeSavedId = '';
-  sendSelectSig = savedSelectSignature(reqs);
-  if (!el.sendMenu) return;
-  const kw = sendFilterKeyword();
-  const shown = kw ? reqs.filter((r) => savedWSMatches(r, kw)) : reqs;
-  el.sendMenu.innerHTML = '';
-  if (!reqs.length) {
-    appendSavedEmpty(el.sendMenu, '点左侧 + 新建发送，或发送后按 cmd 收录');
-    return;
-  }
-  if (!shown.length) {
-    appendSavedEmpty(el.sendMenu, `没有匹配 “${oneLinePreview(el.payload?.value, 24) || kw}”`);
-    return;
-  }
-  for (const r of shown) {
-    const item = document.createElement('div');
-    item.className = 'saved-item' + (r.id === activeSavedId ? ' on' : '');
-    item.dataset.id = r.id;
-    item.setAttribute('role', 'option');
-    item.setAttribute('aria-selected', r.id === activeSavedId ? 'true' : 'false');
-    const title = requestDisplayTitle(r);
-    const cmd = wsCmdLabel(r);
-    const preview = oneLinePreview(r.body || r.name || '', 96);
-    const desc = requestDescription(r);
-    const tip = [title, cmd, preview, desc].filter(Boolean).join('\n');
-    item.title = tip;
-    const main = document.createElement('div');
-    main.className = 'saved-item-main';
-    const line = document.createElement('div');
-    line.className = 'saved-item-line';
-    const headText = title || cmd || preview;
-    if (headText) {
-      const n = document.createElement('span');
-      n.className = title ? 'saved-item-title' : 'saved-item-cmd';
-      fillHighlighted(n, headText, kw);
-      line.appendChild(n);
-    }
-    if (title && cmd && cmd !== title) {
-      const c = document.createElement('span');
-      c.className = 'saved-item-cmd';
-      fillHighlighted(c, cmd, kw);
-      line.appendChild(c);
-    }
-    if (line.childNodes.length) main.appendChild(line);
-    const subParts = [];
-    if (preview && preview !== headText) subParts.push(preview);
-    if (desc) subParts.push(desc);
-    if (subParts.length) {
-      const sub = document.createElement('div');
-      sub.className = 'saved-item-sub';
-      fillHighlighted(sub, subParts.join(' · '), kw);
-      main.appendChild(sub);
-    }
-    item.appendChild(main);
-    item.appendChild(makeSavedDelButton(title || cmd || preview));
-    el.sendMenu.appendChild(item);
-  }
-}
-
-function syncSavedSelect(selectedId) {
-  if (selectedId !== undefined) activeSavedId = selectedId || '';
-  const reqs = currentHTTPRequests();
-  if (savedSelectSignature(reqs) !== savedSelectSig || savedMenuOpen()) {
-    renderSavedSelect(activeSavedId);
-  }
-}
-
-function syncSendSelect(selectedId) {
-  if (selectedId !== undefined) activeSavedId = selectedId || '';
-  const reqs = currentWSMessages();
-  if (savedSelectSignature(reqs) !== sendSelectSig || sendMenuOpen()) {
-    renderSendSelect(activeSavedId);
-  }
 }
 
 function upsertCurrentSavedRequest() {
@@ -2873,10 +3211,6 @@ function upsertCurrentSavedRequest() {
 async function deleteNamedRequest(id) {
   const req = currentProfileRequests().find((r) => r.id === id);
   if (!req?.id) return;
-  const httpOpen = savedMenuOpen();
-  const wsOpen = sendMenuOpen();
-  closeSavedMenu();
-  closeSendMenu();
   const ws = isWSSaved(req);
   const label = requestDisplayTitle(req) || req.name;
   const ok = await askConfirm({
@@ -2884,11 +3218,7 @@ async function deleteNamedRequest(id) {
     message: `确定删除「${label}」？此操作不可恢复。`,
     okText: '删除',
   });
-  if (!ok) {
-    if (httpOpen) openSavedMenu();
-    if (wsOpen) openSendMenu();
-    return;
-  }
+  if (!ok) return;
   const name = profileNameFromURL(currentURL()) || activeProfileName;
   if (!name) return;
   try {
@@ -2900,28 +3230,17 @@ async function deleteNamedRequest(id) {
   const p = currentProfile();
   if (p) p.requests = currentProfileRequests().filter((r) => r.id !== req.id);
   if (activeSavedId === req.id) {
-    activeSavedId = '';
+    setActiveSavedId('');
     loadReqMeta(null);
   }
-  if (ws) renderSendSelect(activeSavedId);
-  else renderSavedSelect(activeSavedId);
   renderCatalog();
-  if (httpOpen && canOpenSavedMenu()) {
-    openSavedMenu();
-    el.url?.focus();
-  } else if (wsOpen && canOpenSendMenu()) {
-    openSendMenu();
-    el.payload?.focus();
-  }
 }
 
 async function pickSavedRequest(id) {
   const req = currentHTTPRequests().find((r) => r.id === id);
   if (!req) return;
   applySavedRequest(req);
-  activeSavedId = req.id;
-  closeSavedMenu();
-  renderSavedSelect(req.id);
+  setActiveSavedId(req.id);
   renderCatalog();
   await persistProfile();
 }
@@ -2930,38 +3249,9 @@ async function pickSavedWSMessage(id) {
   const req = currentWSMessages().find((r) => r.id === id);
   if (!req) return;
   applySavedWSMessage(req);
-  activeSavedId = req.id;
-  sendFilterArmed = false;
-  closeSendMenu();
-  renderSendSelect(req.id);
+  setActiveSavedId(req.id);
   renderCatalog();
   await persistProfile();
-}
-
-function onSavedMenuClick(e) {
-  const del = e.target?.closest?.('.saved-item-del');
-  if (del) {
-    e.preventDefault();
-    e.stopPropagation();
-    const id = del.closest('.saved-item')?.dataset?.id;
-    if (id) deleteNamedRequest(id);
-    return;
-  }
-  const item = e.target?.closest?.('.saved-item');
-  if (item?.dataset?.id) pickSavedRequest(item.dataset.id);
-}
-
-function onSendMenuClick(e) {
-  const del = e.target?.closest?.('.saved-item-del');
-  if (del) {
-    e.preventDefault();
-    e.stopPropagation();
-    const id = del.closest('.saved-item')?.dataset?.id;
-    if (id) deleteNamedRequest(id);
-    return;
-  }
-  const item = e.target?.closest?.('.saved-item');
-  if (item?.dataset?.id) pickSavedWSMessage(item.dataset.id);
 }
 
 async function persistProfile(selectName) {
@@ -2987,6 +3277,8 @@ async function persistProfile(selectName) {
     headers: currentHeaders(),
     headerList: cloneRows(headerRows),
     variableList: cloneRows(varRows),
+    activeEnv,
+    environments: snapshotEnvironments(),
     authType: authState.type,
     authToken: authState.token,
     authUser: authState.user,
@@ -3011,6 +3303,50 @@ async function persistProfile(selectName) {
     renderProfileSelect(selectName || name);
     renderCatalog();
   } catch (_) {}
+}
+
+async function applyImportedCatalog(merged) {
+  const name = merged?.name || '';
+  profiles = (await GetProfiles()) || [];
+  if (name && !profiles.some((p) => p.name === name)) {
+    profiles.push(merged);
+    profiles.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  }
+  renderProfileSelect(name);
+  const p = (name && profiles.find((x) => x.name === name)) || merged;
+  if (!p) return;
+  await applyProfile(p);
+}
+
+async function exportCatalog() {
+  if (!requireURL()) return;
+  await persistProfile();
+  const p = currentProfile();
+  if (!p) return;
+  try {
+    const ok = await ExportCatalog(p);
+    if (ok) flashCatalogTitle('已导出');
+  } catch (e) {
+    setDetailEmpty('导出失败: ' + e);
+  }
+}
+
+async function importCatalog() {
+  const ok = await askConfirm({
+    title: '导入接口',
+    message: '按文件里的主机写入，没有就会新建；多个主机会拆开。当前打开的地址不会被改，除非文件就是它。本机目录按 id 覆盖，Postman Collection 全部作为新接口追加。',
+    okText: '选择文件',
+  });
+  if (!ok) return;
+  await persistProfile();
+  try {
+    const merged = await ImportCatalog();
+    if (!merged) return;
+    await applyImportedCatalog(merged);
+    flashCatalogTitle(merged.name ? `已导入 ${merged.name}` : '已导入');
+  } catch (e) {
+    setDetailEmpty('导入失败: ' + e);
+  }
 }
 
 function requireURL() {
@@ -3049,8 +3385,65 @@ async function ensureWSConnected() {
   }
 }
 
+function moduleHTTPRequests(module) {
+  const key = clipText(module || '', 80);
+  return currentHTTPRequests().filter((r) => requestModuleName(r) === key);
+}
+
+async function runCatalogModule(module) {
+  if (moduleRun || sending) return;
+  if (!isHTTPMode()) {
+    flashCatalogTitle('WebSocket 不能跑');
+    return;
+  }
+  if (!requireURL()) return;
+  const list = moduleHTTPRequests(module);
+  if (!list.length) {
+    flashCatalogTitle('没有可跑的接口');
+    return;
+  }
+  await persistProfile();
+  if (historyMode) await exitHistoryMode();
+  moduleRun = { module, index: 0, total: list.length, id: '' };
+  setBusy(true);
+  refreshCatalogTitle();
+  let stopped = false;
+  try {
+    for (let i = 0; i < list.length; i++) {
+      const req = currentHTTPRequests().find((r) => r.id === list[i].id) || list[i];
+      moduleRun.index = i + 1;
+      moduleRun.id = req.id || '';
+      applySavedRequest(req);
+      setActiveSavedId(req.id);
+      renderCatalog();
+      await activateCurrent();
+      const ex = await RequestHTTP(resolvedOpts(), resolvedBody());
+      if (ex) setDetailHtml(renderHTTPExchange(ex));
+      if (httpExchangeFailed(ex)) {
+        stopped = true;
+        break;
+      }
+    }
+    const n = moduleRun.index;
+    const total = moduleRun.total;
+    await persistProfile();
+    moduleRun = null;
+    renderCatalog();
+    flashCatalogTitle(stopped ? `停在 ${n}/${total}` : `跑完 ${total}/${total}`, 2200);
+  } catch (e) {
+    moduleRun = null;
+    renderCatalog();
+    setDetailEmpty(String(e));
+    flashCatalogTitle('跑失败', 2200);
+  } finally {
+    moduleRun = null;
+    setBusy(false);
+    if (!el.catalogTitle?._flashTimer) refreshCatalogTitle();
+  }
+}
+
 async function sendMsg() {
-  if (sending) return;
+  if (sending || moduleRun) return;
   if (!requireURL()) return;
   await activateCurrent();
   const rawURL = currentURL();
@@ -3063,8 +3456,7 @@ async function sendMsg() {
     if (historyMode) await exitHistoryMode();
     const savedId = upsertCurrentSavedRequest();
     await persistProfile();
-    if (http) syncSavedSelect(savedId);
-    else syncSendSelect(savedId);
+    setActiveSavedId(savedId);
     if (savedId) loadReqMeta(currentSavedRequest());
     if (http) {
       const ex = await RequestHTTP(opts, text);
@@ -3129,8 +3521,6 @@ function applyRecordDraftToForm() {
 }
 
 function openRecordModal() {
-  closeSavedMenu();
-  closeSendMenu();
   const http = isHTTPMode();
   if (el.recordTitle) el.recordTitle.textContent = http ? '手动记录 HTTP' : '手动记录 WebSocket';
   if (el.recordHint) {
@@ -3245,7 +3635,6 @@ async function recordWS() {
 
 /* —— history modal —— */
 function openHistoryModal() {
-  closeSavedMenu();
   el.histModal.classList.remove('hidden');
   el.histModal.setAttribute('aria-hidden', 'false');
   refreshHistoryList();
@@ -3385,8 +3774,6 @@ async function init() {
   }
 
   el.profile.addEventListener('change', async () => {
-    closeSavedMenu();
-    closeSendMenu();
     const nextName = el.profile.value;
     clearTimeout(persistTimer);
     await persistProfile(nextName);
@@ -3394,25 +3781,11 @@ async function init() {
     await applyProfile(p);
   });
   el.btnDelProfile?.addEventListener('click', deleteCurrentProfile);
-  el.savedMenu?.addEventListener('mousedown', (e) => {
-    if (e.target?.closest?.('.saved-item-del')) e.preventDefault();
-  });
-  el.savedMenu?.addEventListener('click', onSavedMenuClick);
-  el.sendMenu?.addEventListener('mousedown', (e) => {
-    if (e.target?.closest?.('.saved-item-del')) e.preventDefault();
-  });
-  el.sendMenu?.addEventListener('click', onSendMenuClick);
   document.addEventListener('mousedown', (e) => {
-    if (savedMenuOpen() && !el.savedMenu?.contains(e.target) && e.target !== el.url) {
-      closeSavedMenu();
-    }
-    if (sendMenuOpen() && !el.sendMenu?.contains(e.target) && e.target !== el.payload) {
-      closeSendMenu();
-    }
     if (moduleMenuOpen() && !el.moduleWrap?.contains(e.target)) {
       closeModuleMenu();
     }
-    if (groupMenuOpen() && !el.groupMenu?.contains(e.target) && !e.target?.closest?.('.catalog-group-more')) {
+    if (groupMenuOpen() && !el.groupMenu?.contains(e.target) && !e.target?.closest?.('.catalog-more, .env-more')) {
       closeGroupMenu();
     }
   });
@@ -3524,17 +3897,8 @@ async function init() {
   el.btnFmtRecReq?.addEventListener('click', () => formatRecordField(el.recReqBody));
   el.btnFmtRecRes?.addEventListener('click', () => formatRecordField(el.recResBody));
 
-  el.payload.addEventListener('focus', () => {
-    if (!canOpenSendMenu()) return;
-    sendFilterArmed = false;
-    openSendMenu();
-  });
   el.payload.addEventListener('input', () => {
     schedulePersist();
-    if (!canOpenSendMenu()) return;
-    sendFilterArmed = true;
-    if (currentWSMessages().length) openSendMenu();
-    else closeSendMenu();
   });
   el.payload.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
@@ -3576,14 +3940,6 @@ async function init() {
       closeConfirmModal(false);
       return;
     }
-    if (savedMenuOpen()) {
-      closeSavedMenu();
-      return;
-    }
-    if (sendMenuOpen()) {
-      closeSendMenu();
-      return;
-    }
     if (recordModalOpen()) {
       closeRecordModal();
       return;
@@ -3601,11 +3957,6 @@ async function init() {
   el.url.addEventListener('click', () => {
     if (!urlPrefix) openUrlModal();
   });
-  el.url.addEventListener('focus', () => {
-    if (!canOpenSavedMenu()) return;
-    savedFilterArmed = false;
-    openSavedMenu();
-  });
   el.url.addEventListener('change', async () => {
     normalizeURLPathInput();
     applyTransportFromURL();
@@ -3617,9 +3968,6 @@ async function init() {
   el.url.addEventListener('input', () => {
     if (syncingQuery) return;
     if (isHTTPMode()) syncParamsFromURL();
-    if (!canOpenSavedMenu()) return;
-    savedFilterArmed = true;
-    if (currentHTTPRequests().length) openSavedMenu();
   });
   el.protocol.addEventListener('change', persistProfile);
   el.method.addEventListener('change', () => {
@@ -3641,17 +3989,26 @@ async function init() {
   el.moduleMenu?.addEventListener('mousedown', (e) => e.preventDefault());
   el.moduleMenu?.addEventListener('click', onModuleMenuClick);
   el.reqDesc?.addEventListener('input', onReqMetaInput);
+  el.envSelect?.addEventListener('change', onEnvSelectChange);
+  el.btnEnvMore?.addEventListener('mousedown', (e) => e.preventDefault());
+  el.btnEnvMore?.addEventListener('click', openEnvMenu);
   el.btnCatalogToggle?.addEventListener('click', () => setCatalogOpen(!catalogOpen()));
   el.btnCatalogAdd?.addEventListener('click', () => addCatalogRequest(''));
+  el.btnCatalogExport?.addEventListener('click', exportCatalog);
+  el.btnCatalogImport?.addEventListener('click', importCatalog);
   el.btnSaveReq?.addEventListener('click', saveCurrentRequest);
   el.btnSaveWS?.addEventListener('click', saveCurrentRequest);
   el.catalogFilter?.addEventListener('input', () => renderCatalog());
   el.catalogList?.addEventListener('mousedown', (e) => {
-    if (e.target?.closest?.('.saved-item-del, .catalog-group-more, .catalog-add-module')) {
+    if (e.target?.closest?.('.catalog-more, .catalog-add-module')) {
       e.preventDefault();
     }
   });
   el.catalogList?.addEventListener('click', onCatalogClick);
+  el.catalogList?.addEventListener('dragstart', onCatalogDragStart);
+  el.catalogList?.addEventListener('dragover', onCatalogDragOver);
+  el.catalogList?.addEventListener('drop', onCatalogDrop);
+  el.catalogList?.addEventListener('dragend', onCatalogDragEnd);
   el.catalogList?.addEventListener('scroll', closeGroupMenu);
   el.groupMenu?.addEventListener('mousedown', (e) => e.preventDefault());
   el.groupMenu?.addEventListener('click', onGroupMenuClick);

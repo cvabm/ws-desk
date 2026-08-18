@@ -26,6 +26,10 @@ export function Disconnect() {
   return window['go']['main']['App']['Disconnect']();
 }
 
+export function ExportCatalog(arg1) {
+  return window['go']['main']['App']['ExportCatalog'](arg1);
+}
+
 export function FormatJSON(arg1) {
   return window['go']['main']['App']['FormatJSON'](arg1);
 }
@@ -44,6 +48,10 @@ export function GetProfiles() {
 
 export function GetStatus() {
   return window['go']['main']['App']['GetStatus']();
+}
+
+export function ImportCatalog() {
+  return window['go']['main']['App']['ImportCatalog']();
 }
 
 export function ListSessions() {

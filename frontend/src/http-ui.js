@@ -130,6 +130,13 @@ export function methodOmitsBody(method) {
   }
 }
 
+export function httpExchangeFailed(ex) {
+  if (!ex) return true;
+  if (String(ex.error || '').trim()) return true;
+  const code = Number(ex.statusCode) || 0;
+  return code >= 400;
+}
+
 export function parseAuthorization(headers) {
   const raw = headerValue(headers, 'Authorization');
   if (!raw) return { type: 'none', token: '', user: '', pass: '' };

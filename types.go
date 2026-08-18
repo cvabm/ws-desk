@@ -7,6 +7,12 @@ type HeaderItem struct {
 	Enabled bool   `json:"enabled"`
 }
 
+// Environment is a named variable set on one host profile.
+type Environment struct {
+	Name      string       `json:"name"`
+	Variables []HeaderItem `json:"variables,omitempty"`
+}
+
 // Profile is a named connection preset (one per scheme://host[:port]).
 type Profile struct {
 	Name         string            `json:"name"`
@@ -23,8 +29,12 @@ type Profile struct {
 	Body         string            `json:"body,omitempty"`
 	FormList     []HeaderItem      `json:"formList,omitempty"`
 	VariableList []HeaderItem      `json:"variableList,omitempty"`
-	Reconnect    bool              `json:"reconnect"`
-	PingSec      int               `json:"pingSec"`
+	// ActiveEnv is the name of the environment currently used for {{vars}}.
+	ActiveEnv string `json:"activeEnv,omitempty"`
+	// Environments are named variable sets on this host. VariableList mirrors the active one.
+	Environments []Environment `json:"environments,omitempty"`
+	Reconnect    bool          `json:"reconnect"`
+	PingSec      int           `json:"pingSec"`
 	// NoFollowRedirects keeps HTTP 3xx as the response (API-tester default is to follow).
 	NoFollowRedirects bool `json:"noFollowRedirects,omitempty"`
 	// Requests are named snapshots under this host. Variables stay on the profile.

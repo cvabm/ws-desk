@@ -14,6 +14,8 @@ export function DeleteRequest(arg1:string,arg2:string):Promise<void>;
 
 export function Disconnect():Promise<void>;
 
+export function ExportCatalog(arg1:main.Profile):Promise<boolean>;
+
 export function FormatJSON(arg1:string):Promise<string>;
 
 export function GetMessages(arg1:number,arg2:number):Promise<Array<main.Msg>>;
@@ -23,6 +25,8 @@ export function GetPaths():Promise<Record<string, string>>;
 export function GetProfiles():Promise<Array<main.Profile>>;
 
 export function GetStatus():Promise<main.Status>;
+
+export function ImportCatalog():Promise<main.Profile>;
 
 export function ListSessions():Promise<Array<main.SessionInfo>>;
 
