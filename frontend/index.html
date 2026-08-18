@@ -62,6 +62,9 @@
           <span id="catalogTitle">接口</span>
           <div class="pane-actions">
             <input id="catalogFilter" class="input search-inline catalog-filter" type="search" spellcheck="false" placeholder="过滤…"/>
+            <button id="btnCatalogAdd" class="btn ghost bar-btn btn-icon" type="button" title="新建接口" aria-label="新建接口">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.75v10.5M2.75 8h10.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            </button>
           </div>
         </div>
         <div id="catalogList" class="catalog-list"></div>
@@ -74,6 +77,7 @@
               <button id="btnClearCookies" class="btn ghost" type="button" title="清除此主机本次会话的 Cookie">清 Cookie</button>
               <button id="btnCurl" class="btn ghost" type="button" title="复制当前请求为 cURL">cURL</button>
               <button id="btnFormatHttp" class="btn ghost" type="button">格式化</button>
+              <button id="btnSaveReq" class="btn ghost" type="button" title="保存当前接口，不发送（Ctrl+S）">保存</button>
             </div>
           </div>
           <div id="reqBuilder" class="req-builder">
@@ -81,12 +85,15 @@
               <div class="req-meta-row">
                 <input id="reqTitle" class="input req-meta-title" type="text" spellcheck="false" maxlength="80"
                        placeholder="标题，例如 登录"/>
-                <input id="reqModule" class="input req-meta-module" type="text" spellcheck="false" maxlength="80"
-                       list="moduleList" placeholder="模块" autocomplete="off"/>
+                <div id="moduleWrap" class="module-wrap">
+                  <input id="reqModule" class="input req-meta-module" type="text" spellcheck="false" maxlength="80"
+                         placeholder="模块" autocomplete="off" aria-autocomplete="list"
+                         aria-controls="moduleMenu" aria-expanded="false"/>
+                  <div id="moduleMenu" class="saved-menu module-menu hidden" role="listbox" aria-hidden="true"></div>
+                </div>
               </div>
               <input id="reqDesc" class="input req-meta-desc" type="text" spellcheck="false" maxlength="200"
                      placeholder="描述（可选）"/>
-              <datalist id="moduleList"></datalist>
             </div>
             <div id="reqTabs" class="req-tabs">
               <button type="button" class="req-tab" data-tab="params">参数</button>
@@ -157,6 +164,7 @@
         <div id="sendMenu" class="saved-menu send-menu hidden" role="listbox" aria-hidden="true"></div>
       </div>
       <div class="composer-actions">
+        <button id="btnSaveWS" class="btn ghost" type="button" title="保存当前发送，不发送（Ctrl+S）">保存</button>
         <button id="btnFormat" class="btn ghost" type="button">格式化</button>
         <button id="btnResend" class="btn ghost" type="button">重发</button>
         <button id="btnSend" class="btn primary" type="button">发送</button>
@@ -177,6 +185,25 @@
       <div class="record-foot">
         <button id="btnConfirmCancel" class="btn ghost" type="button">取消</button>
         <button id="btnConfirmOk" class="btn danger" type="button">删除</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- text prompt modal -->
+  <div id="promptModal" class="modal hidden" aria-hidden="true">
+    <div class="modal-card url-card">
+      <div class="modal-head">
+        <span id="promptTitle">输入</span>
+      </div>
+      <div class="url-modal-body">
+        <div id="promptHint" class="url-modal-hint"></div>
+        <input id="promptInput" class="input url-modal-input" type="text" spellcheck="false"
+               autocomplete="off" autocapitalize="off" autocorrect="off"/>
+        <div id="promptErr" class="record-err"></div>
+      </div>
+      <div class="record-foot">
+        <button id="btnPromptCancel" class="btn ghost" type="button">取消</button>
+        <button id="btnPromptOk" class="btn primary" type="button">确定</button>
       </div>
     </div>
   </div>
@@ -275,6 +302,8 @@
       </div>
     </div>
   </div>
+
+  <div id="groupMenu" class="saved-menu group-menu hidden" role="menu" aria-hidden="true"></div>
 
   <script src="./src/main.js" type="module"></script>
 </body>

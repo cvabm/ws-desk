@@ -227,6 +227,7 @@ export namespace main {
 	    pingSec: number;
 	    noFollowRedirects?: boolean;
 	    requests?: SavedRequest[];
+	    modules?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new Profile(source);
@@ -252,6 +253,7 @@ export namespace main {
 	        this.pingSec = source["pingSec"];
 	        this.noFollowRedirects = source["noFollowRedirects"];
 	        this.requests = this.convertValues(source["requests"], SavedRequest);
+	        this.modules = source["modules"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

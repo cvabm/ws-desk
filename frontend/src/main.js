@@ -95,12 +95,24 @@ const el = {
   reqTitle: $('reqTitle'),
   reqModule: $('reqModule'),
   reqDesc: $('reqDesc'),
-  moduleList: $('moduleList'),
+  moduleWrap: $('moduleWrap'),
+  moduleMenu: $('moduleMenu'),
   catalogPane: $('catalogPane'),
   catalogTitle: $('catalogTitle'),
   catalogList: $('catalogList'),
   catalogFilter: $('catalogFilter'),
+  groupMenu: $('groupMenu'),
   btnCatalogToggle: $('btnCatalogToggle'),
+  btnCatalogAdd: $('btnCatalogAdd'),
+  btnSaveReq: $('btnSaveReq'),
+  btnSaveWS: $('btnSaveWS'),
+  promptModal: $('promptModal'),
+  promptTitle: $('promptTitle'),
+  promptHint: $('promptHint'),
+  promptInput: $('promptInput'),
+  promptErr: $('promptErr'),
+  btnPromptCancel: $('btnPromptCancel'),
+  btnPromptOk: $('btnPromptOk'),
   reqTabs: $('reqTabs'),
   tabParams: $('tabParams'),
   tabHeaders: $('tabHeaders'),
@@ -1208,6 +1220,8 @@ function fillFromMessage(m) {
 /* —— profiles —— */
 async function applyProfile(p) {
   if (!p) return;
+  if (!Array.isArray(p.modules)) p.modules = [];
+  if (!Array.isArray(p.requests)) p.requests = [];
   setURL(p.url || p.name || '', p.name);
   el.protocol.value = p.protocol || '';
   const method = (p.method || 'GET').toUpperCase();
@@ -1282,6 +1296,8 @@ function clearEditor() {
 }
 
 let confirmResolver = null;
+let promptResolver = null;
+let promptValidate = null;
 let savedSelectSig = '';
 let sendSelectSig = '';
 let activeSavedId = '';
@@ -1300,6 +1316,61 @@ function closeConfirmModal(ok) {
   const resolve = confirmResolver;
   confirmResolver = null;
   if (resolve) resolve(Boolean(ok));
+}
+
+function promptModalOpen() {
+  return Boolean(el.promptModal && !el.promptModal.classList.contains('hidden'));
+}
+
+function setPromptError(text) {
+  if (el.promptErr) el.promptErr.textContent = text || '';
+}
+
+function closePromptModal(value) {
+  if (!promptModalOpen()) return;
+  el.promptModal.classList.add('hidden');
+  el.promptModal.setAttribute('aria-hidden', 'true');
+  setPromptError('');
+  const resolve = promptResolver;
+  promptResolver = null;
+  promptValidate = null;
+  if (resolve) resolve(value);
+}
+
+function submitPromptModal() {
+  const raw = el.promptInput?.value || '';
+  const err = promptValidate ? promptValidate(raw) : '';
+  if (err) {
+    setPromptError(err);
+    el.promptInput?.focus();
+    return;
+  }
+  closePromptModal(raw);
+}
+
+function askPrompt({ title, value, placeholder, hint, okText, validate }) {
+  closePromptModal(null);
+  if (el.promptTitle) el.promptTitle.textContent = title || '输入';
+  if (el.promptHint) {
+    el.promptHint.textContent = hint || '';
+    el.promptHint.classList.toggle('hidden', !hint);
+  }
+  if (el.promptInput) {
+    el.promptInput.value = value || '';
+    el.promptInput.placeholder = placeholder || '';
+  }
+  if (el.btnPromptOk) el.btnPromptOk.textContent = okText || '确定';
+  setPromptError('');
+  promptValidate = validate || null;
+  el.promptModal?.classList.remove('hidden');
+  el.promptModal?.setAttribute('aria-hidden', 'false');
+  setTimeout(() => {
+    el.promptInput?.focus();
+    el.promptInput?.select();
+  }, 30);
+  return new Promise((resolve) => {
+    promptResolver = resolve;
+  });
 }
 
 function askConfirm({ title, message, okText }) {
@@ -1658,6 +1729,7 @@ function flushReqMeta() {
 }
 
 function rematchSavedFromEditor() {
+  if (activeSavedId && currentSavedRequest()) return;
   const id = isHTTPMode() ? matchSavedId() : matchSavedWSId();
   if (id === activeSavedId) return;
   flushReqMeta();
@@ -1703,8 +1775,20 @@ function requestModuleName(r) {
   return String(r?.module || '').trim();
 }
 
+function clipText(s, max) {
+  const t = String(s || '').trim();
+  const chars = Array.from(t);
+  if (max > 0 && chars.length > max) return chars.slice(0, max).join('');
+  return t;
+}
+
+function profileModules() {
+  const p = currentProfile();
+  return Array.isArray(p?.modules) ? p.modules.map((m) => String(m || '').trim()).filter(Boolean) : [];
+}
+
 function currentModules() {
-  const names = new Set();
+  const names = new Set(profileModules());
   for (const r of currentProfileRequests()) {
     const m = requestModuleName(r);
     if (m) names.add(m);
@@ -1712,14 +1796,133 @@ function currentModules() {
   return [...names].sort((a, b) => a.localeCompare(b, 'zh'));
 }
 
-function fillModuleList() {
-  if (!el.moduleList) return;
-  el.moduleList.innerHTML = '';
-  for (const name of currentModules()) {
-    const opt = document.createElement('option');
-    opt.value = name;
-    el.moduleList.appendChild(opt);
+function ensureCurrentProfile() {
+  const host = profileNameFromURL(currentURL());
+  if (!host) return null;
+  let p = currentProfile();
+  if (!p) {
+    p = { name: host, url: currentURL(), requests: [], modules: [] };
+    profiles.push(p);
+    profiles.sort((a, b) => String(a.name).localeCompare(String(b.name)));
   }
+  if (!Array.isArray(p.requests)) p.requests = [];
+  if (!Array.isArray(p.modules)) p.modules = [];
+  return p;
+}
+
+function rememberModule(name) {
+  name = clipText(name, 80);
+  const p = ensureCurrentProfile();
+  if (!p || !name) return '';
+  if (!p.modules.includes(name)) p.modules = [...p.modules, name];
+  return name;
+}
+
+function renameModule(from, to) {
+  from = clipText(from, 80);
+  to = clipText(to, 80);
+  if (!from || !to || from === to) return false;
+  const p = ensureCurrentProfile();
+  if (!p) return false;
+  for (const r of p.requests) {
+    if (requestModuleName(r) === from) r.module = to;
+  }
+  const next = [];
+  const seen = new Set();
+  for (const raw of [...p.modules, to]) {
+    const name = raw === from ? to : raw;
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    next.push(name);
+  }
+  p.modules = next;
+  if (el.reqModule && currentReqModule() === from) el.reqModule.value = to;
+  const req = currentSavedRequest();
+  if (req && requestModuleName(req) === from) req.module = to;
+  return true;
+}
+
+function clearModule(name) {
+  name = clipText(name, 80);
+  const p = currentProfile();
+  if (!p || !name) return;
+  for (const r of p.requests || []) {
+    if (requestModuleName(r) === name) r.module = '';
+  }
+  p.modules = (p.modules || []).filter((m) => m !== name);
+  if (el.reqModule && currentReqModule() === name) el.reqModule.value = '';
+  const req = currentSavedRequest();
+  if (req && requestModuleName(req) === name) req.module = '';
+}
+
+let moduleFilterArmed = false;
+
+function moduleMenuOpen() {
+  return Boolean(el.moduleMenu && !el.moduleMenu.classList.contains('hidden'));
+}
+
+function closeModuleMenu() {
+  el.moduleMenu?.classList.add('hidden');
+  el.moduleMenu?.setAttribute('aria-hidden', 'true');
+  el.reqModule?.setAttribute('aria-expanded', 'false');
+  el.moduleWrap?.classList.remove('open');
+}
+
+function renderModuleMenu() {
+  if (!el.moduleMenu) return;
+  const all = currentModules();
+  const cur = currentReqModule();
+  const kw = moduleFilterArmed ? cur.toLowerCase() : '';
+  const shown = kw ? all.filter((name) => name.toLowerCase().includes(kw)) : all;
+  el.moduleMenu.innerHTML = '';
+  const items = [{ name: '', label: '未分组' }, ...shown.map((name) => ({ name, label: name }))];
+  if (kw && cur && !all.some((name) => name.toLowerCase() === kw)) {
+    items.push({ name: cur, label: `新建「${cur}」` });
+  }
+  for (const item of items) {
+    const row = document.createElement('div');
+    row.className = 'saved-item' + (item.name === cur ? ' on' : '');
+    row.dataset.module = item.name;
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', item.name === cur ? 'true' : 'false');
+    const main = document.createElement('div');
+    main.className = 'saved-item-main';
+    const line = document.createElement('div');
+    line.className = 'saved-item-line';
+    const head = document.createElement('span');
+    head.className = item.name ? 'saved-item-title' : 'saved-item-sub';
+    head.textContent = item.label;
+    line.appendChild(head);
+    main.appendChild(line);
+    row.appendChild(main);
+    el.moduleMenu.appendChild(row);
+  }
+}
+
+function openModuleMenu() {
+  if (!el.moduleMenu || historyMode) return;
+  if (confirmModalOpen() || urlModalOpen() || recordModalOpen() || promptModalOpen()) return;
+  renderModuleMenu();
+  el.moduleMenu.classList.remove('hidden');
+  el.moduleMenu.setAttribute('aria-hidden', 'false');
+  el.reqModule?.setAttribute('aria-expanded', 'true');
+  el.moduleWrap?.classList.add('open');
+}
+
+function pickModule(name) {
+  if (el.reqModule) el.reqModule.value = name || '';
+  onReqMetaInput();
+  closeModuleMenu();
+}
+
+function onModuleMenuClick(e) {
+  const item = e.target?.closest?.('.saved-item');
+  if (!item || !el.moduleMenu?.contains(item)) return;
+  pickModule(item.dataset.module || '');
+}
+
+function fillModuleList() {
+  if (moduleMenuOpen()) renderModuleMenu();
 }
 
 function catalogFilterKeyword() {
@@ -1749,21 +1952,156 @@ function compareCatalogItems(a, b) {
 
 function groupCatalogRequests(reqs) {
   const map = new Map();
+  for (const name of currentModules()) map.set(name, []);
   for (const r of reqs) {
     const key = requestModuleName(r);
     if (!map.has(key)) map.set(key, []);
     map.get(key).push(r);
   }
   for (const items of map.values()) items.sort(compareCatalogItems);
+  const kw = catalogFilterKeyword();
   const keys = [...map.keys()].sort((a, b) => {
     if (!a) return 1;
     if (!b) return -1;
     return a.localeCompare(b, 'zh');
   });
-  return keys.map((module) => ({ module, items: map.get(module) }));
+  return keys
+    .filter((module) => {
+      const items = map.get(module) || [];
+      if (items.length) return true;
+      if (!module) return false;
+      if (kw) return module.toLowerCase().includes(kw);
+      return true;
+    })
+    .map((module) => ({ module, items: map.get(module) }));
+}
+
+function appendCatalogAddModule() {
+  const add = document.createElement('button');
+  add.type = 'button';
+  add.className = 'catalog-add-module';
+  add.textContent = '+ 新建模块';
+  el.catalogList.appendChild(add);
+}
+
+function makeCatalogGroupHead(group, kw) {
+  const head = document.createElement('div');
+  head.className = 'catalog-group';
+  head.dataset.module = group.module;
+  const closed = !kw && catalogClosedModules.has(group.module);
+  const caret = document.createElement('span');
+  caret.className = 'catalog-caret';
+  caret.textContent = closed ? '▸' : '▾';
+  const name = document.createElement('span');
+  name.className = 'catalog-group-name';
+  name.textContent = group.module || '未分组';
+  const count = document.createElement('span');
+  count.className = 'catalog-group-count';
+  count.textContent = String(group.items.length);
+  const more = document.createElement('button');
+  more.type = 'button';
+  more.className = 'catalog-group-more';
+  more.title = '模块菜单';
+  more.setAttribute('aria-label', group.module ? `「${group.module}」菜单` : '未分组菜单');
+  more.setAttribute('aria-haspopup', 'menu');
+  more.setAttribute('aria-expanded', 'false');
+  more.textContent = '⋯';
+  head.appendChild(caret);
+  head.appendChild(name);
+  head.appendChild(count);
+  head.appendChild(more);
+  return { head, closed };
+}
+
+let groupMenuModule = null;
+
+function groupMenuOpen() {
+  return Boolean(el.groupMenu && !el.groupMenu.classList.contains('hidden'));
+}
+
+function closeGroupMenu() {
+  if (!groupMenuOpen() && !groupMenuModule) {
+    for (const btn of el.catalogList?.querySelectorAll('.catalog-group-more[aria-expanded="true"]') || []) {
+      btn.setAttribute('aria-expanded', 'false');
+    }
+    return;
+  }
+  el.groupMenu?.classList.add('hidden');
+  el.groupMenu?.setAttribute('aria-hidden', 'true');
+  groupMenuModule = null;
+  for (const btn of el.catalogList?.querySelectorAll('.catalog-group-more[aria-expanded="true"]') || []) {
+    btn.setAttribute('aria-expanded', 'false');
+  }
+}
+
+function appendGroupMenuItem(act, label, danger) {
+  const row = document.createElement('div');
+  row.className = 'saved-item group-menu-item' + (danger ? ' danger' : '');
+  row.dataset.act = act;
+  row.setAttribute('role', 'menuitem');
+  const main = document.createElement('div');
+  main.className = 'saved-item-main';
+  const line = document.createElement('div');
+  line.className = 'saved-item-line';
+  const head = document.createElement('span');
+  head.className = 'saved-item-title';
+  head.textContent = label;
+  line.appendChild(head);
+  main.appendChild(line);
+  row.appendChild(main);
+  el.groupMenu.appendChild(row);
+}
+
+function placeGroupMenu(anchor) {
+  const menu = el.groupMenu;
+  if (!menu || !anchor) return;
+  const pad = 8;
+  const r = anchor.getBoundingClientRect();
+  const mw = menu.offsetWidth || 140;
+  const mh = menu.offsetHeight || 88;
+  let top = r.bottom + 4;
+  let left = r.right - mw;
+  if (left < pad) left = pad;
+  if (left + mw > window.innerWidth - pad) left = Math.max(pad, window.innerWidth - pad - mw);
+  if (top + mh > window.innerHeight - pad) top = Math.max(pad, r.top - 4 - mh);
+  menu.style.top = `${Math.round(top)}px`;
+  menu.style.left = `${Math.round(left)}px`;
+}
+
+function openGroupMenu(anchor, module) {
+  if (!el.groupMenu) return;
+  if (groupMenuOpen() && groupMenuModule === module) {
+    closeGroupMenu();
+    return;
+  }
+  groupMenuModule = module;
+  el.groupMenu.innerHTML = '';
+  appendGroupMenuItem('add', '新建接口');
+  if (module) {
+    appendGroupMenuItem('rename', '重命名');
+    appendGroupMenuItem('delete', '删除模块', true);
+  }
+  el.groupMenu.classList.remove('hidden');
+  el.groupMenu.setAttribute('aria-hidden', 'false');
+  for (const btn of el.catalogList?.querySelectorAll('.catalog-group-more') || []) {
+    btn.setAttribute('aria-expanded', btn === anchor ? 'true' : 'false');
+  }
+  placeGroupMenu(anchor);
+}
+
+function onGroupMenuClick(e) {
+  const item = e.target?.closest?.('[data-act]');
+  if (!item || !el.groupMenu?.contains(item)) return;
+  const act = item.dataset.act;
+  const module = groupMenuModule || '';
+  closeGroupMenu();
+  if (act === 'add') addCatalogRequest(module);
+  else if (act === 'rename' && module) renameCatalogModule(module);
+  else if (act === 'delete' && module) deleteCatalogModule(module);
 }
 
 function renderCatalog() {
+  closeGroupMenu();
   fillModuleList();
   if (!el.catalogList) return;
   const all = catalogRequests();
@@ -1774,46 +2112,32 @@ function renderCatalog() {
   if (!currentProfile() && !profileNameFromURL(currentURL())) {
     const empty = document.createElement('div');
     empty.className = 'catalog-empty';
-    empty.textContent = '先增加地址，发送后的接口会按模块出现在这里。';
+    empty.textContent = '先增加地址，再点 + 新建接口。';
     el.catalogList.appendChild(empty);
     return;
   }
-  if (!all.length) {
+  const groups = groupCatalogRequests(reqs);
+  if (!all.length && !groups.length) {
     const empty = document.createElement('div');
     empty.className = 'catalog-empty';
     empty.textContent = isHTTPMode()
-      ? '发送后会按方法 + 路径出现在这里，可填写模块分组。'
-      : '发送后会按 cmd 出现在这里，可填写模块分组。';
+      ? '点 + 新建接口，或发送后自动收录。可按模块分组。'
+      : '点 + 新建发送，或发送后按 cmd 收录。可按模块分组。';
     el.catalogList.appendChild(empty);
+    appendCatalogAddModule();
     return;
   }
-  if (!reqs.length) {
+  if (!reqs.length && !groups.length) {
     const empty = document.createElement('div');
     empty.className = 'catalog-empty';
     empty.textContent = `没有匹配 “${el.catalogFilter?.value?.trim() || kw}”`;
     el.catalogList.appendChild(empty);
     return;
   }
-  for (const group of groupCatalogRequests(reqs)) {
+  for (const group of groups) {
     const wrap = document.createElement('div');
     wrap.className = 'catalog-group-wrap';
-    const head = document.createElement('button');
-    head.type = 'button';
-    head.className = 'catalog-group';
-    head.dataset.module = group.module;
-    const closed = !kw && catalogClosedModules.has(group.module);
-    const caret = document.createElement('span');
-    caret.className = 'catalog-caret';
-    caret.textContent = closed ? '▸' : '▾';
-    const name = document.createElement('span');
-    name.className = 'catalog-group-name';
-    name.textContent = group.module || '未分组';
-    const count = document.createElement('span');
-    count.className = 'catalog-group-count';
-    count.textContent = String(group.items.length);
-    head.appendChild(caret);
-    head.appendChild(name);
-    head.appendChild(count);
+    const { head, closed } = makeCatalogGroupHead(group, kw);
     wrap.appendChild(head);
     const box = document.createElement('div');
     box.className = 'catalog-items' + (closed ? ' hidden' : '');
@@ -1823,6 +2147,7 @@ function renderCatalog() {
     wrap.appendChild(box);
     el.catalogList.appendChild(wrap);
   }
+  if (!kw) appendCatalogAddModule();
 }
 
 function makeCatalogItem(r, kw) {
@@ -1893,6 +2218,20 @@ function makeCatalogItem(r, kw) {
 }
 
 function onCatalogClick(e) {
+  const addMod = e.target?.closest?.('.catalog-add-module');
+  if (addMod) {
+    e.preventDefault();
+    addCatalogModule();
+    return;
+  }
+  const more = e.target?.closest?.('.catalog-group-more');
+  if (more) {
+    e.preventDefault();
+    e.stopPropagation();
+    const module = more.closest('.catalog-group')?.dataset?.module || '';
+    openGroupMenu(more, module);
+    return;
+  }
   const group = e.target?.closest?.('.catalog-group');
   if (group && el.catalogList?.contains(group)) {
     const key = group.dataset.module || '';
@@ -1919,6 +2258,168 @@ async function pickCatalogRequest(id) {
   renderCatalog();
 }
 
+function blankHTTPRequest(id, moduleName) {
+  const origin = urlPrefix || originFromURL(currentURL()) || currentURL();
+  return {
+    id,
+    name: 'GET /',
+    title: '',
+    description: '',
+    module: clipText(moduleName, 80),
+    updatedAt: Date.now(),
+    kind: 'http',
+    url: origin,
+    method: 'GET',
+    protocol: '',
+    headerList: [emptyRow()],
+    authType: 'none',
+    authToken: '',
+    authUser: '',
+    authPass: '',
+    bodyType: 'json',
+    body: '',
+    formList: [emptyRow()],
+  };
+}
+
+function blankWSRequest(id, moduleName) {
+  return {
+    id,
+    name: '新消息',
+    title: '',
+    description: '',
+    module: clipText(moduleName, 80),
+    updatedAt: Date.now(),
+    kind: 'ws',
+    url: currentURL(),
+    protocol: el.protocol?.value?.trim() || '',
+    body: '',
+  };
+}
+
+function wsNameFromEditor(prev) {
+  const text = el.payload?.value || '';
+  const key = wsMessageKey(text);
+  if (key) return wsMessageStoreName(key, text);
+  return prev?.name || '新消息';
+}
+
+function syncActiveRequestSnapshot() {
+  const req = currentSavedRequest();
+  if (!req) return;
+  const next = isHTTPMode()
+    ? snapshotCurrentRequest(currentRequestKey() || req.name || 'GET /', req.id)
+    : snapshotWSMessage(wsNameFromEditor(req), req.id);
+  Object.assign(req, next);
+}
+
+async function addCatalogRequest(moduleName) {
+  if (!requireURL()) return;
+  closeSavedMenu();
+  closeSendMenu();
+  if (activeSavedId) syncActiveRequestSnapshot();
+  const p = ensureCurrentProfile();
+  if (!p) return;
+  const module = clipText(moduleName, 80);
+  if (module) rememberModule(module);
+  const id = newRequestId();
+  const req = isHTTPMode() ? blankHTTPRequest(id, module) : blankWSRequest(id, module);
+  p.requests = (p.requests || []).concat(req);
+  if (isHTTPMode()) applySavedRequest(req);
+  else applySavedWSMessage(req);
+  activeSavedId = id;
+  if (isHTTPMode()) renderSavedSelect(id);
+  else renderSendSelect(id);
+  renderCatalog();
+  await persistProfile();
+  el.reqTitle?.focus();
+}
+
+async function addCatalogModule() {
+  if (!requireURL()) return;
+  const raw = await askPrompt({
+    title: '新建模块',
+    placeholder: '例如 登录',
+    hint: '模块相当于文件夹，可把接口归到一组。',
+    okText: '创建',
+    validate: (s) => {
+      if (!String(s || '').trim()) return '请输入模块名';
+      if (Array.from(String(s || '').trim()).length > 80) return '最多 80 字';
+      return '';
+    },
+  });
+  if (raw == null) return;
+  const name = rememberModule(raw);
+  if (!name) return;
+  catalogClosedModules.delete(name);
+  renderCatalog();
+  await persistProfile();
+}
+
+async function renameCatalogModule(from) {
+  const raw = await askPrompt({
+    title: '重命名模块',
+    value: from,
+    placeholder: '模块名',
+    okText: '保存',
+    validate: (s) => {
+      if (!String(s || '').trim()) return '请输入模块名';
+      if (Array.from(String(s || '').trim()).length > 80) return '最多 80 字';
+      return '';
+    },
+  });
+  if (raw == null) return;
+  const to = clipText(raw, 80);
+  if (!to || to === from) return;
+  if (!renameModule(from, to)) return;
+  if (catalogClosedModules.has(from)) {
+    catalogClosedModules.delete(from);
+    catalogClosedModules.add(to);
+  }
+  renderCatalog();
+  await persistProfile();
+}
+
+async function deleteCatalogModule(name) {
+  const n = currentProfileRequests().filter((r) => requestModuleName(r) === name).length;
+  const ok = await askConfirm({
+    title: '删除模块',
+    message: n
+      ? `删除「${name}」后，其中 ${n} 个接口会移到「未分组」。`
+      : `确定删除空模块「${name}」？`,
+    okText: '删除',
+  });
+  if (!ok) return;
+  clearModule(name);
+  catalogClosedModules.delete(name);
+  renderCatalog();
+  await persistProfile();
+}
+
+async function saveCurrentRequest() {
+  if (!requireURL()) return;
+  const p = ensureCurrentProfile();
+  if (!p) return;
+  if (activeSavedId && currentSavedRequest()) {
+    syncActiveRequestSnapshot();
+  } else {
+    const id = upsertCurrentSavedRequest();
+    if (id) activeSavedId = id;
+  }
+  const module = currentReqModule();
+  if (module) rememberModule(module);
+  await persistProfile();
+  if (isHTTPMode()) {
+    flashButton(el.btnSaveReq, '已保存');
+    renderSavedSelect(activeSavedId);
+  } else {
+    flashButton(el.btnSaveWS, '已保存');
+    renderSendSelect(activeSavedId);
+  }
+  loadReqMeta(currentSavedRequest());
+  renderCatalog();
+}
+
 function currentSavedRequest() {
   if (!activeSavedId) return null;
   return currentProfileRequests().find((r) => r.id === activeSavedId) || null;
@@ -1931,7 +2432,7 @@ function savedMenuOpen() {
 function canOpenSavedMenu() {
   if (!isHTTPMode()) return false;
   if (historyMode) return false;
-  if (confirmModalOpen() || urlModalOpen() || recordModalOpen()) return false;
+  if (confirmModalOpen() || urlModalOpen() || recordModalOpen() || promptModalOpen()) return false;
   if (!urlPrefix || el.url?.readOnly) return false;
   return true;
 }
@@ -1939,7 +2440,7 @@ function canOpenSavedMenu() {
 function canOpenSendMenu() {
   if (isHTTPMode()) return false;
   if (historyMode) return false;
-  if (confirmModalOpen() || urlModalOpen() || recordModalOpen()) return false;
+  if (confirmModalOpen() || urlModalOpen() || recordModalOpen() || promptModalOpen()) return false;
   if (!profileNameFromURL(currentURL()) && !activeProfileName) return false;
   return true;
 }
@@ -2198,7 +2699,7 @@ function renderSavedSelect(selectedId) {
   const shown = kw ? reqs.filter((r) => savedRequestMatches(r, kw)) : reqs;
   el.savedMenu.innerHTML = '';
   if (!reqs.length) {
-    appendSavedEmpty(el.savedMenu, '发送后会按方法 + 路径出现在这里');
+    appendSavedEmpty(el.savedMenu, '点左侧 + 新建接口，或发送后自动收录');
     return;
   }
   if (!shown.length) {
@@ -2265,7 +2766,7 @@ function renderSendSelect(selectedId) {
   const shown = kw ? reqs.filter((r) => savedWSMatches(r, kw)) : reqs;
   el.sendMenu.innerHTML = '';
   if (!reqs.length) {
-    appendSavedEmpty(el.sendMenu, '发送后会按 cmd / type / request 出现在这里');
+    appendSavedEmpty(el.sendMenu, '点左侧 + 新建发送，或发送后按 cmd 收录');
     return;
   }
   if (!shown.length) {
@@ -2334,15 +2835,20 @@ function syncSendSelect(selectedId) {
 }
 
 function upsertCurrentSavedRequest() {
-  const host = profileNameFromURL(currentURL());
-  if (!host) return '';
-  let p = currentProfile();
-  if (!p) {
-    p = { name: host, url: currentURL(), requests: [] };
-    profiles.push(p);
-    profiles.sort((a, b) => String(a.name).localeCompare(String(b.name)));
-  }
+  const p = ensureCurrentProfile();
+  if (!p) return '';
   const list = Array.isArray(p.requests) ? p.requests.slice() : [];
+  if (activeSavedId) {
+    const i = list.findIndex((r) => r.id === activeSavedId);
+    if (i >= 0) {
+      const req = isHTTPMode()
+        ? snapshotCurrentRequest(currentRequestKey() || list[i].name || 'GET /', list[i].id)
+        : snapshotWSMessage(wsNameFromEditor(list[i]), list[i].id);
+      list[i] = req;
+      p.requests = list;
+      return req.id;
+    }
+  }
   if (isHTTPMode()) {
     const key = currentRequestKey();
     let i = list.findIndex((r) => isHTTPSaved(r) && requestKeyFrom(r) === key);
@@ -2461,9 +2967,12 @@ function onSendMenuClick(e) {
 async function persistProfile(selectName) {
   if (typeof selectName !== 'string') selectName = '';
   flushReqMeta();
+  if (activeSavedId) syncActiveRequestSnapshot();
   const url = currentURL();
   const name = profileNameFromURL(url);
   if (!name) return;
+  const module = currentReqModule();
+  if (module && activeSavedId) rememberModule(module);
   authState = {
     type: el.authType?.value || 'none',
     token: el.authToken?.value || '',
@@ -2489,6 +2998,7 @@ async function persistProfile(selectName) {
     pingSec: 20,
     noFollowRedirects: el.followRedirects ? !el.followRedirects.checked : false,
     requests: currentProfileRequests(),
+    modules: [...(currentProfile()?.modules || [])],
   };
   try {
     await SaveProfile(p);
@@ -2854,6 +3364,18 @@ async function init() {
   el.confirmModal?.addEventListener('click', (e) => {
     if (e.target === el.confirmModal) closeConfirmModal(false);
   });
+  el.btnPromptCancel?.addEventListener('click', () => closePromptModal(null));
+  el.btnPromptOk?.addEventListener('click', submitPromptModal);
+  el.promptModal?.addEventListener('click', (e) => {
+    if (e.target === el.promptModal) closePromptModal(null);
+  });
+  el.promptInput?.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      submitPromptModal();
+    }
+  });
   suppressSessionReset = true;
   try {
     applyTransportFromURL();
@@ -2886,6 +3408,12 @@ async function init() {
     }
     if (sendMenuOpen() && !el.sendMenu?.contains(e.target) && e.target !== el.payload) {
       closeSendMenu();
+    }
+    if (moduleMenuOpen() && !el.moduleWrap?.contains(e.target)) {
+      closeModuleMenu();
+    }
+    if (groupMenuOpen() && !el.groupMenu?.contains(e.target) && !e.target?.closest?.('.catalog-group-more')) {
+      closeGroupMenu();
     }
   });
 
@@ -3024,7 +3552,26 @@ async function init() {
   }
 
   document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && String(e.key).toLowerCase() === 's') {
+      e.preventDefault();
+      if (confirmModalOpen() || urlModalOpen() || recordModalOpen() || promptModalOpen()) return;
+      if (el.histModal && !el.histModal.classList.contains('hidden')) return;
+      saveCurrentRequest();
+      return;
+    }
     if (e.key !== 'Escape') return;
+    if (groupMenuOpen()) {
+      closeGroupMenu();
+      return;
+    }
+    if (moduleMenuOpen()) {
+      closeModuleMenu();
+      return;
+    }
+    if (promptModalOpen()) {
+      closePromptModal(null);
+      return;
+    }
     if (confirmModalOpen()) {
       closeConfirmModal(false);
       return;
@@ -3081,14 +3628,34 @@ async function init() {
   });
   el.reconnect.addEventListener('change', persistProfile);
   el.reqTitle?.addEventListener('input', onReqMetaInput);
-  el.reqModule?.addEventListener('input', onReqMetaInput);
+  el.reqModule?.addEventListener('focus', () => {
+    moduleFilterArmed = false;
+    openModuleMenu();
+  });
+  el.reqModule?.addEventListener('input', () => {
+    moduleFilterArmed = true;
+    onReqMetaInput();
+    if (moduleMenuOpen()) renderModuleMenu();
+    else openModuleMenu();
+  });
+  el.moduleMenu?.addEventListener('mousedown', (e) => e.preventDefault());
+  el.moduleMenu?.addEventListener('click', onModuleMenuClick);
   el.reqDesc?.addEventListener('input', onReqMetaInput);
   el.btnCatalogToggle?.addEventListener('click', () => setCatalogOpen(!catalogOpen()));
+  el.btnCatalogAdd?.addEventListener('click', () => addCatalogRequest(''));
+  el.btnSaveReq?.addEventListener('click', saveCurrentRequest);
+  el.btnSaveWS?.addEventListener('click', saveCurrentRequest);
   el.catalogFilter?.addEventListener('input', () => renderCatalog());
   el.catalogList?.addEventListener('mousedown', (e) => {
-    if (e.target?.closest?.('.saved-item-del')) e.preventDefault();
+    if (e.target?.closest?.('.saved-item-del, .catalog-group-more, .catalog-add-module')) {
+      e.preventDefault();
+    }
   });
   el.catalogList?.addEventListener('click', onCatalogClick);
+  el.catalogList?.addEventListener('scroll', closeGroupMenu);
+  el.groupMenu?.addEventListener('mousedown', (e) => e.preventDefault());
+  el.groupMenu?.addEventListener('click', onGroupMenuClick);
+  window.addEventListener('resize', closeGroupMenu);
 
   EventsOn('message', (m) => {
     if (historyMode) return;

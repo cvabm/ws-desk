@@ -106,6 +106,7 @@ func (a *App) saveProfileFile(p Profile) error {
 	if p.Headers == nil {
 		p.Headers = map[string]string{}
 	}
+	p.Modules = normalizeModules(p.Modules)
 	data, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
 		return err
@@ -272,15 +273,45 @@ func (a *App) loadProfileByName(name string) (Profile, error) {
 	return p, nil
 }
 
+func normalizeModules(list []string) []string {
+	if list == nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(list))
+	out := make([]string, 0, len(list))
+	for _, name := range list {
+		name = clipRunes(name, 80)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
+
 func (a *App) mergeProfileRequests(p Profile) Profile {
-	if p.Requests != nil {
+	needReq := p.Requests == nil
+	needMod := p.Modules == nil
+	if !needReq && !needMod {
+		p.Modules = normalizeModules(p.Modules)
 		return p
 	}
 	existing, err := a.loadProfileByName(p.Name)
 	if err != nil {
+		p.Modules = normalizeModules(p.Modules)
 		return p
 	}
-	p.Requests = existing.Requests
+	if needReq {
+		p.Requests = existing.Requests
+	}
+	if needMod {
+		p.Modules = existing.Modules
+	}
+	p.Modules = normalizeModules(p.Modules)
 	return p
 }
 

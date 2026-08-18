@@ -338,3 +338,57 @@ func TestSavedRequestKeepsModule(t *testing.T) {
 		t.Fatalf("module after upsert = %q", again.Module)
 	}
 }
+
+func TestProfileKeepsModules(t *testing.T) {
+	dir := t.TempDir()
+	a := NewApp()
+	a.baseDir = dir
+	if err := os.MkdirAll(filepath.Join(dir, "servers"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := a.SaveProfile(Profile{
+		URL:     "https://example.com/a",
+		Modules: []string{"登录", " 登录 ", "", "用户"},
+		Requests: []SavedRequest{{
+			Name: "GET /login", URL: "https://example.com/login", Method: "GET", Module: "登录",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := a.GetProfiles()
+	if len(got) != 1 {
+		t.Fatalf("profiles = %d", len(got))
+	}
+	if len(got[0].Modules) != 2 || got[0].Modules[0] != "登录" || got[0].Modules[1] != "用户" {
+		t.Fatalf("modules = %#v", got[0].Modules)
+	}
+
+	if err := a.SaveProfile(Profile{
+		URL:    "https://example.com/b",
+		Method: "POST",
+		Requests: []SavedRequest{{
+			Name: "GET /login", URL: "https://example.com/login", Method: "GET", Module: "登录",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got = a.GetProfiles()
+	if len(got[0].Modules) != 2 || got[0].Modules[0] != "登录" || got[0].Modules[1] != "用户" {
+		t.Fatalf("modules after omitted save = %#v", got[0].Modules)
+	}
+
+	if _, err := a.SaveRequest("https://example.com", SavedRequest{
+		Name: "GET /me", URL: "https://example.com/me", Method: "GET", Module: "用户",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got = a.GetProfiles()
+	if len(got[0].Modules) != 2 {
+		t.Fatalf("modules after SaveRequest = %#v", got[0].Modules)
+	}
+	if got[0].URL != "https://example.com/b" || got[0].Method != "POST" {
+		t.Fatalf("last-used after SaveRequest = %+v", got[0])
+	}
+}

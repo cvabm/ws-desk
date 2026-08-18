@@ -29,6 +29,8 @@ type Profile struct {
 	NoFollowRedirects bool `json:"noFollowRedirects,omitempty"`
 	// Requests are named snapshots under this host. Variables stay on the profile.
 	Requests []SavedRequest `json:"requests,omitempty"`
+	// Modules are named folders in the per-host catalog. Empty folders stay here.
+	Modules []string `json:"modules,omitempty"`
 }
 
 // SavedRequest is a named request bookmark on one host profile.
