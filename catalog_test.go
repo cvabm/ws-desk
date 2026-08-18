@@ -245,6 +245,52 @@ func TestApplyImportedFileDoesNotTouchOtherHost(t *testing.T) {
 	}
 }
 
+func TestCompactProjectCatalogsKeepsOneCopy(t *testing.T) {
+	dir := t.TempDir()
+	a := NewApp()
+	a.baseDir = dir
+	if err := os.MkdirAll(filepath.Join(dir, "servers"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reqs := []SavedRequest{
+		{ID: "a1", Name: "login", Title: "login", Module: "接口", Kind: "ws", Body: `{"type":"login"}`},
+		{ID: "a2", Name: "list", Title: "list", Module: "接口", Kind: "ws", Body: `{"type":"list"}`, Example: `{"ok":true}`},
+	}
+	if err := a.SaveProfile(Profile{
+		URL:     "ws://10.0.0.1:1/imcp",
+		Project: "小京",
+		Requests: []SavedRequest{
+			{ID: "b1", Name: "login", Title: "login", Module: "接口", Kind: "ws", Body: `{"type":"login"}`},
+		},
+		Environments: []Environment{
+			{Name: "A", Variables: []HeaderItem{{Key: "host", Value: "ws://10.0.0.1:1/imcp", Enabled: true}}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SaveProfile(Profile{
+		URL:          "ws://10.0.0.2:1/imcp",
+		Project:      "小京",
+		Requests:     reqs,
+		Environments: []Environment{{Name: "B", Variables: []HeaderItem{{Key: "host", Value: "ws://10.0.0.2:1/imcp", Enabled: true}}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := a.GetProfiles()
+	if len(got) != 1 {
+		t.Fatalf("profiles=%#v", namesOf(got))
+	}
+	if got[0].Project != "小京" {
+		t.Fatalf("project=%q", got[0].Project)
+	}
+	if len(got[0].Requests) != 2 {
+		t.Fatalf("reqs=%#v", got[0].Requests)
+	}
+	if len(got[0].Environments) != 2 {
+		t.Fatalf("envs=%#v", got[0].Environments)
+	}
+}
+
 func namesOf(list []Profile) []string {
 	out := make([]string, len(list))
 	for i, p := range list {

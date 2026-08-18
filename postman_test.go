@@ -93,6 +93,9 @@ func TestParsePostmanCollection(t *testing.T) {
 	if login.ID != "" {
 		t.Fatalf("postman id should be empty: %q", login.ID)
 	}
+	if p.Project != "商店 API" {
+		t.Fatalf("project=%q", p.Project)
+	}
 	if login.Title != "密码登录" || login.Name != "POST /login" {
 		t.Fatalf("login name=%q title=%q", login.Name, login.Title)
 	}

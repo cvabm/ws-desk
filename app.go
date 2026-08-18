@@ -85,6 +85,7 @@ func (a *App) shutdown(ctx context.Context) {
 
 // GetProfiles returns saved connection profiles (one per scheme + host[:port]).
 func (a *App) GetProfiles() []Profile {
+	_ = a.compactProjectCatalogs()
 	list, err := a.loadProfiles()
 	if err != nil {
 		return nil
@@ -121,7 +122,7 @@ func (a *App) ExportCatalog(p Profile) (bool, error) {
 	return a.exportCatalog(p)
 }
 
-// ImportCatalog writes a picked catalog JSON or Postman Collection onto the hosts in the file.
+// ImportCatalog writes a picked catalog JSON, Postman Collection, or ApiZza project onto the hosts in the file.
 func (a *App) ImportCatalog() (*Profile, error) {
 	return a.importCatalog()
 }

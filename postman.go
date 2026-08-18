@@ -142,6 +142,9 @@ func parsePostmanCollection(raw []byte) (Profile, error) {
 		return Profile{}, fmt.Errorf("invalid postman collection")
 	}
 	p := Profile{Headers: map[string]string{}}
+	if name := clipRunes(strings.TrimSpace(col.Info.Name), 80); name != "" {
+		p.Project = name
+	}
 	collectPostmanItems(col.Item, nil, &p)
 	p.Modules = normalizeModules(p.Modules)
 	if vars := postmanVarRows(col.Variable); len(vars) > 0 || strings.TrimSpace(col.Info.Name) != "" {

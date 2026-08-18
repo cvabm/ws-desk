@@ -4,8 +4,6 @@ import {
   Disconnect,
   Send,
   RequestHTTP,
-  RecordHTTP,
-  RecordWS,
   GetProfiles,
   GetStatus,
   GetMessages,
@@ -27,10 +25,11 @@ import {
   ClearCookies,
 } from '../wailsjs/go/main/App';
 import { EventsOn, ClipboardSetText } from '../wailsjs/runtime/runtime';
-import { renderDetailHtml, renderHTTPExchange, renderWSRecord, toggleJsonNode } from './highlight.js';
+import { escapeHtml, highlightJson, renderDetailHtml, renderHTTPExchange, renderWSRecord, toggleJsonNode } from './highlight.js';
 import {
   emptyRow,
   cloneRows,
+  ensureHostVarRows,
   rowsFromMap,
   parseQuery,
   applyQuery,
@@ -54,6 +53,8 @@ import {
 const $ = (id) => document.getElementById(id);
 const THEME_KEY = 'ws-desk-theme';
 const CATALOG_KEY = 'ws-desk-catalog';
+const SEL_KEY = 'ws-desk-sel';
+const MODE_KEY = 'ws-desk-work-mode';
 const DEFAULT_ENV = '默认';
 
 const HTTP_SCHEMES = new Set(['http', 'https']);
@@ -61,7 +62,8 @@ const ALL_SCHEMES = new Set(['ws', 'wss', 'http', 'https']);
 
 const el = {
   app: $('app'),
-  profile: $('profile'),
+  project: $('project'),
+  barEnv: $('barEnv'),
   btnAddProfile: $('btnAddProfile'),
   btnDelProfile: $('btnDelProfile'),
   urlBox: $('urlBox'),
@@ -93,15 +95,30 @@ const el = {
   btnToggle: $('btnToggle'),
   btnSendTop: $('btnSendTop'),
   btnRecord: $('btnRecord'),
+  modeSwitch: $('modeSwitch'),
+  btnModeDoc: $('btnModeDoc'),
+  btnModeDebug: $('btnModeDebug'),
+  docPane: $('docPane'),
+  docHeadTitle: $('docHeadTitle'),
+  docEmpty: $('docEmpty'),
+  docBody: $('docBody'),
+  docMeta: $('docMeta'),
+  docSummary: $('docSummary'),
+  docExtra: $('docExtra'),
+  docReq: $('docReq'),
+  docRes: $('docRes'),
+  btnCopyDocReq: $('btnCopyDocReq'),
+  btnCopyDocRes: $('btnCopyDocRes'),
   state: $('state'),
   reqBuilder: $('reqBuilder'),
   reqMeta: $('reqMeta'),
   reqTitle: $('reqTitle'),
   reqModule: $('reqModule'),
   reqDesc: $('reqDesc'),
-  envSelect: $('envSelect'),
+  envWrap: $('envWrap'),
   btnEnvMore: $('btnEnvMore'),
-  envVars: $('envVars'),
+  envEdit: $('envEdit'),
+  envEditName: $('envEditName'),
   moduleWrap: $('moduleWrap'),
   moduleMenu: $('moduleMenu'),
   catalogPane: $('catalogPane'),
@@ -109,6 +126,7 @@ const el = {
   catalogList: $('catalogList'),
   catalogFilter: $('catalogFilter'),
   groupMenu: $('groupMenu'),
+  catalogTip: $('catalogTip'),
   btnCatalogToggle: $('btnCatalogToggle'),
   btnCatalogAdd: $('btnCatalogAdd'),
   btnCatalogExport: $('btnCatalogExport'),
@@ -126,7 +144,6 @@ const el = {
   tabParams: $('tabParams'),
   tabHeaders: $('tabHeaders'),
   tabAuth: $('tabAuth'),
-  tabVars: $('tabVars'),
   tabBody: $('tabBody'),
   paramRows: $('paramRows'),
   headerRows: $('headerRows'),
@@ -140,8 +157,12 @@ const el = {
   listTitle: $('listTitle'),
   detail: $('detail'),
   btnFill: $('btnFill'),
+  btnCopyDetail: $('btnCopyDetail'),
   payloadWrap: $('payloadWrap'),
+  payloadOutCol: $('payloadOutCol'),
+  payloadInCol: $('payloadInCol'),
   payload: $('payload'),
+  payloadIn: $('payloadIn'),
 
   btnSend: $('btnSend'),
   btnFormat: $('btnFormat'),
@@ -197,6 +218,7 @@ let allLiveMsgs = [];
 let selectedId = 0;
 let lastSent = '';
 let historyMode = false;
+let workMode = 'doc';
 let activeHistKeyword = '';
 let historySessionURL = '';
 let historySessionProtocol = '';
@@ -210,9 +232,9 @@ let paramRows = [emptyRow()];
 /** @type {{key:string,value:string,enabled:boolean}[]} */
 let headerRows = [emptyRow()];
 /** @type {{key:string,value:string,enabled:boolean}[]} */
-let varRows = [emptyRow()];
+let varRows = ensureHostVarRows([]);
 /** @type {{name:string,variables:{key:string,value:string,enabled:boolean}[]}[]} */
-let environments = [{ name: DEFAULT_ENV, variables: [emptyRow()] }];
+let environments = [{ name: DEFAULT_ENV, variables: ensureHostVarRows([]) }];
 let activeEnv = DEFAULT_ENV;
 /** @type {{key:string,value:string,enabled:boolean}[]} */
 let formRows = [emptyRow()];
@@ -230,6 +252,7 @@ let persistTimer = 0;
 let suppressSessionReset = false;
 let activeProfileName = '';
 let urlPrefix = '';
+let lastHostVarURL = '';
 
 function schedulePersist() {
   clearTimeout(persistTimer);
@@ -416,6 +439,8 @@ function renderMessageList(messages, { scrollTop = 0, selectFirst = false } = {}
 function setDetailEmpty(text) {
   el.detail.classList.add('empty');
   el.detail.textContent = text;
+  setFillButton(false);
+  setCopyDetailButton(false);
 }
 
 function setDetailHtml(html) {
@@ -426,7 +451,6 @@ function setDetailHtml(html) {
 function paintMsgDetail(m) {
   if (!m) {
     setDetailEmpty('选择一条消息');
-    setFillButton(false);
     return;
   }
   if (m.exchange) {
@@ -437,6 +461,7 @@ function paintMsgDetail(m) {
     setDetailHtml(renderDetailHtml(m.dir, m.time, m.pretty || m.text));
   }
   setFillButton(canFillFromMessage(m));
+  setCopyDetailButton(true);
 }
 
 let selectSeq = 0;
@@ -478,8 +503,7 @@ function setHistoryMode(on, label = '') {
   historyMode = on;
   el.app?.classList.toggle('history', on);
   el.histBanner.classList.toggle('hidden', !on);
-  el.reqPane?.classList.toggle('hidden', on || !isHTTPMode());
-  el.composer?.classList.toggle('hidden', on);
+  applyWorkMode();
   if (on) {
     el.listTitle.textContent = '历史消息';
     el.histLabel.textContent = label || '历史模式';
@@ -592,8 +616,12 @@ function eventProfileName(v) {
   return String(v || '').trim();
 }
 
+function connectionProfileName() {
+  return profileNameFromURL(currentURL()) || '';
+}
+
 function isCurrentProfileEvent(name) {
-  const cur = profileNameFromURL(currentURL()) || activeProfileName;
+  const cur = connectionProfileName() || activeProfileName;
   const got = eventProfileName(name);
   if (!got) return true;
   if (!cur) return false;
@@ -601,12 +629,9 @@ function isCurrentProfileEvent(name) {
 }
 
 async function activateCurrent() {
-  const name = profileNameFromURL(currentURL());
+  const name = connectionProfileName();
   if (!name) return '';
-  const changed = name !== activeProfileName;
   await SelectProfile(name);
-  activeProfileName = name;
-  if (changed) await reloadLiveSession();
   return name;
 }
 
@@ -639,29 +664,227 @@ function placePayload(http) {
   if (!el.payload) return;
   if (http && el.tabBody && el.payload.parentElement !== el.tabBody) {
     el.tabBody.appendChild(el.payload);
-  } else if (!http && el.payloadWrap && el.payload.parentElement !== el.payloadWrap) {
+  } else if (!http && el.payloadOutCol && el.payload.parentElement !== el.payloadOutCol) {
+    el.payloadOutCol.appendChild(el.payload);
+  } else if (!http && !el.payloadOutCol && el.payloadWrap && el.payload.parentElement !== el.payloadWrap) {
     el.payloadWrap.appendChild(el.payload);
   }
 }
 
 function placeReqMeta(http) {
   if (!el.reqMeta) return;
-  if (http && el.reqBuilder && el.reqMeta.parentElement !== el.reqBuilder) {
+  if (isDocMode() && el.docMeta && el.reqMeta.parentElement !== el.docMeta) {
+    el.docMeta.appendChild(el.reqMeta);
+  } else if (!isDocMode() && http && el.reqBuilder && el.reqMeta.parentElement !== el.reqBuilder) {
     el.reqBuilder.insertBefore(el.reqMeta, el.reqBuilder.firstChild);
-  } else if (!http && el.composer && el.reqMeta.parentElement !== el.composer) {
+  } else if (!isDocMode() && !http && el.composer && el.reqMeta.parentElement !== el.composer) {
     el.composer.insertBefore(el.reqMeta, el.composer.firstChild);
   }
-  placeVarRows(http);
+  placeVarRows();
 }
 
-function placeVarRows(http) {
-  if (!el.varRows) return;
-  if (http && el.tabVars && el.varRows.parentElement !== el.tabVars) {
-    el.tabVars.appendChild(el.varRows);
-  } else if (!http && el.envVars && el.varRows.parentElement !== el.envVars) {
-    el.envVars.appendChild(el.varRows);
+function placeVarRows() {
+  if (!el.varRows || !el.envEdit) return;
+  if (el.varRows.parentElement !== el.envEdit) el.envEdit.appendChild(el.varRows);
+}
+
+function isDocMode() {
+  return workMode === 'doc' && !historyMode;
+}
+
+function readWorkMode() {
+  return localStorage.getItem(MODE_KEY) === 'debug' ? 'debug' : 'doc';
+}
+
+function setWorkMode(mode) {
+  const next = mode === 'debug' ? 'debug' : 'doc';
+  if (next === 'doc' && workMode === 'debug' && activeSavedId) {
+    syncActiveRequestSnapshot();
+  } else if (next === 'debug' && workMode === 'doc' && activeSavedId) {
+    flushDocEditors();
   }
-  el.envVars?.classList.toggle('hidden', http);
+  workMode = next;
+  localStorage.setItem(MODE_KEY, workMode);
+  if (historyMode) {
+    exitHistoryMode().then(() => applyWorkMode());
+    return;
+  }
+  applyWorkMode();
+}
+
+function applyWorkMode() {
+  const doc = isDocMode();
+  const http = isHTTPMode();
+  el.app?.classList.toggle('doc-mode', doc);
+  el.btnModeDoc?.classList.toggle('on', workMode === 'doc');
+  el.btnModeDebug?.classList.toggle('on', workMode === 'debug');
+  el.btnModeDoc?.setAttribute('aria-selected', workMode === 'doc' ? 'true' : 'false');
+  el.btnModeDebug?.setAttribute('aria-selected', workMode === 'debug' ? 'true' : 'false');
+  if (historyMode) {
+    el.docPane?.classList.add('hidden');
+    el.reqPane?.classList.add('hidden');
+    el.composer?.classList.add('hidden');
+    return;
+  }
+  if (doc) {
+    closeEnvEdit();
+    el.docPane?.classList.remove('hidden');
+    el.reqPane?.classList.add('hidden');
+    el.composer?.classList.add('hidden');
+    placeReqMeta(http);
+    renderDocPane({ reloadEditors: true });
+    return;
+  }
+  el.docPane?.classList.add('hidden');
+  el.reqPane?.classList.toggle('hidden', !http);
+  el.composer?.classList.remove('hidden');
+  placePayload(http);
+  placeReqMeta(http);
+  activateCurrent().then(() => reloadLiveSession()).catch(() => {});
+}
+
+function prettyDocText(text) {
+  const raw = String(text || '');
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+  try {
+    return JSON.stringify(JSON.parse(trimmed), null, 2);
+  } catch {
+    return raw;
+  }
+}
+
+function renderDocCode(text) {
+  const shown = prettyDocText(text);
+  if (!shown) return '<div class="doc-muted">无</div>';
+  return `<pre class="doc-code">${highlightJson(shown)}</pre>`;
+}
+
+function renderDocTable(label, rows) {
+  const items = (rows || []).filter((r) => String(r?.key || '').trim());
+  if (!items.length) return '';
+  const body = items.map((r) => {
+    const off = r.enabled === false ? ' off' : '';
+    return `<div class="doc-kv${off}"><span class="doc-k">${escapeHtml(r.key)}</span><span class="doc-v">${escapeHtml(r.value || '')}</span></div>`;
+  }).join('');
+  return `<div class="doc-sec"><div class="doc-sec-head">${escapeHtml(label)}</div><div class="doc-kvs">${body}</div></div>`;
+}
+
+function renderDocAuth(req) {
+  const t = String(req?.authType || 'none');
+  if (!t || t === 'none') return '';
+  let extra = '';
+  if (t === 'bearer' && req.authToken) extra = ` · ${req.authToken}`;
+  else if (t === 'basic' && req.authUser) extra = ` · ${req.authUser}`;
+  return `<div class="doc-sec"><div class="doc-sec-head">鉴权</div><div class="doc-auth">${escapeHtml(t)}${escapeHtml(extra)}</div></div>`;
+}
+
+function renderDocPane({ reloadEditors = false } = {}) {
+  if (!el.docBody || !el.docEmpty) return;
+  const req = currentSavedRequest();
+  if (!req) {
+    el.docEmpty.classList.remove('hidden');
+    el.docBody.classList.add('hidden');
+    if (el.docHeadTitle) el.docHeadTitle.textContent = '接口详情';
+    fillDocEditors(null);
+    return;
+  }
+  el.docEmpty.classList.add('hidden');
+  el.docBody.classList.remove('hidden');
+  const title = requestDisplayTitle(req) || catalogItemLabel(req) || '未命名接口';
+  if (el.docHeadTitle) el.docHeadTitle.textContent = title;
+  const http = isHTTPSaved(req);
+  const method = http ? String(req.method || 'GET').toUpperCase() : 'WS';
+  const path = http ? (requestItemPath(req) || '/') : (wsCmdLabel(req) || requestDisplayTitle(req) || '信令');
+  const url = req.url || currentURL() || '';
+  if (el.docSummary) {
+    el.docSummary.innerHTML =
+      `<span class="saved-item-method ${http ? method.toLowerCase() : 'ws'}">${escapeHtml(method)}</span>` +
+      `<span class="doc-path">${escapeHtml(path)}</span>` +
+      (url ? `<span class="doc-url">${escapeHtml(url)}</span>` : '');
+  }
+  if (el.docExtra) {
+    if (http) {
+      el.docExtra.innerHTML = [
+        renderDocTable('Query', parseQuery(req.url || '')),
+        renderDocTable('请求头', req.headerList),
+        renderDocAuth(req),
+      ].join('');
+    } else {
+      el.docExtra.innerHTML = '';
+    }
+  }
+  if (reloadEditors || req.id !== docEditorReqId) fillDocEditors(req);
+}
+
+let docEditorReqId = '';
+
+function docRequestText(req) {
+  if (!req) return '';
+  if (isHTTPSaved(req)) {
+    if (req.bodyType === 'none') return '';
+    if (req.bodyType === 'form') return formEncode(req.formList || []);
+    return req.body || '';
+  }
+  return req.body || '';
+}
+
+function fillDocEditors(req) {
+  if (el.docReq) el.docReq.value = req ? docRequestText(req) : '';
+  if (el.docRes) el.docRes.value = req ? (req.example || '') : '';
+  docEditorReqId = req?.id || '';
+}
+
+function applyDocRequestText(req, text) {
+  const raw = String(text || '');
+  if (!isHTTPSaved(req)) {
+    req.body = raw;
+    if (el.payload) el.payload.value = raw;
+    return;
+  }
+  if (req.bodyType === 'form') {
+    formRows = parseForm(raw);
+    req.formList = cloneRows(formRows);
+    req.body = formEncode(formRows);
+    if (el.formRows) renderKV(el.formRows, formRows, schedulePersist);
+    return;
+  }
+  if (req.bodyType === 'none' && raw.trim()) {
+    setBodyType('json');
+    req.bodyType = 'json';
+  }
+  req.body = raw;
+  if (el.payload) el.payload.value = raw;
+}
+
+function applyDocExampleText(req, text) {
+  const raw = String(text || '');
+  req.example = raw;
+  recordDraft.in = raw;
+  if (isHTTPSaved(req)) recordDraft.resBody = raw;
+  if (el.payloadIn) el.payloadIn.value = raw;
+}
+
+function flushDocEditors() {
+  if (!isDocMode()) return;
+  const req = currentSavedRequest();
+  if (!req) return;
+  if (el.docReq) applyDocRequestText(req, el.docReq.value);
+  if (el.docRes) applyDocExampleText(req, el.docRes.value);
+}
+
+function onDocReqInput() {
+  const req = currentSavedRequest();
+  if (!req) return;
+  applyDocRequestText(req, el.docReq.value);
+  schedulePersist();
+}
+
+function onDocResInput() {
+  const req = currentSavedRequest();
+  if (!req) return;
+  applyDocExampleText(req, el.docRes.value);
+  schedulePersist();
 }
 
 function applyTransportUI(scheme) {
@@ -679,14 +902,11 @@ function applyTransportUI(scheme) {
   el.btnRecord?.classList.remove('hidden');
   if (el.btnRecord) {
     el.btnRecord.title = http
-      ? '打开手动记录：用当前请求配一条响应，不发送'
-      : '打开手动记录：保存一对发送/返回，不发送';
+      ? '保存到左侧接口：用当前请求配一条响应，不发送'
+      : '保存到左侧接口：一对发送/返回，不发送';
   }
   el.state?.classList.toggle('hidden', http);
-  el.reqPane?.classList.toggle('hidden', historyMode || !http);
-  el.composer?.classList.toggle('hidden', historyMode);
-  placePayload(http);
-  placeReqMeta(http);
+  applyWorkMode();
   if (el.detailTitle) el.detailTitle.textContent = http ? '响应' : '详情';
   if (!historyMode) refreshFilterTitle();
   if (http && modeChanged) {
@@ -725,7 +945,7 @@ function splitLockedURL(url, lockName) {
   }
   let prefix = originFromURL(raw);
   if (!prefix) {
-    const name = String(lockName || el.profile?.value || profileNameFromURL(raw) || '').trim();
+    const name = String(lockName || currentProfile()?.name || profileNameFromURL(raw) || '').trim();
     if (name && raw.slice(0, name.length).toLowerCase() === name.toLowerCase()) prefix = name;
   }
   if (!prefix) return { prefix: '', rest: raw };
@@ -819,14 +1039,13 @@ function syncAuthFields() {
 }
 
 function setReqTab(tab) {
-  reqTab = tab === 'response' ? 'body' : (tab || 'body');
+  reqTab = tab === 'response' || tab === 'vars' ? 'body' : (tab || 'body');
   for (const btn of el.reqTabs?.querySelectorAll('.req-tab') || []) {
     btn.classList.toggle('on', btn.dataset.tab === reqTab);
   }
   el.tabParams?.classList.toggle('hidden', reqTab !== 'params');
   el.tabHeaders?.classList.toggle('hidden', reqTab !== 'headers');
   el.tabAuth?.classList.toggle('hidden', reqTab !== 'auth');
-  el.tabVars?.classList.toggle('hidden', reqTab !== 'vars');
   el.tabBody?.classList.toggle('hidden', reqTab !== 'body');
 }
 
@@ -849,8 +1068,16 @@ function onParamsChange() {
 function renderRequestEditor() {
   if (el.paramRows) renderKV(el.paramRows, paramRows, onParamsChange);
   if (el.headerRows) renderKV(el.headerRows, headerRows, schedulePersist);
-  if (el.varRows) renderKV(el.varRows, varRows, schedulePersist);
+  if (el.varRows) renderKV(el.varRows, varRows, onVarRowsChange, { lockHost: true });
   if (el.formRows) renderKV(el.formRows, formRows, schedulePersist);
+}
+
+function onVarRowsChange() {
+  flushActiveEnv();
+  const hostURL = envConnectionURL({ variables: varRows });
+  if (hostURL) applyConnectionURL(hostURL);
+  else if (lastHostVarURL) clearConnectionURL();
+  schedulePersist();
 }
 
 function currentVarMap() {
@@ -945,9 +1172,8 @@ function findEnv(name) {
   return environments.find((e) => e.name === name) || null;
 }
 
-function envRowsOf(env) {
-  const rows = cloneRows(env?.variables);
-  return rows.length ? rows : [emptyRow()];
+function envRowsOf(env, fallbackURL) {
+  return ensureHostVarRows(env?.variables, fallbackURL ?? currentURL());
 }
 
 function envsFromProfile(p) {
@@ -958,14 +1184,13 @@ function envsFromProfile(p) {
     const name = clipEnvName(e?.name);
     if (!name || seen.has(name)) continue;
     seen.add(name);
-    const vars = cloneRows(e.variables);
-    out.push({ name, variables: vars.length ? vars : [emptyRow()] });
+    out.push({ name, variables: ensureHostVarRows(e.variables, p?.url) });
   }
   if (!out.length) {
     const vars = Array.isArray(p?.variableList) && p.variableList.length
-      ? cloneRows(p.variableList)
-      : [emptyRow()];
-    out.push({ name: DEFAULT_ENV, variables: vars.length ? vars : [emptyRow()] });
+      ? p.variableList
+      : [];
+    out.push({ name: DEFAULT_ENV, variables: ensureHostVarRows(vars, p?.url) });
   }
   let active = clipEnvName(p?.activeEnv);
   if (!out.some((e) => e.name === active)) active = out[0].name;
@@ -980,7 +1205,7 @@ function flushActiveEnv() {
     env = { name, variables: [] };
     environments.push(env);
   }
-  env.variables = cloneRows(varRows);
+  env.variables = ensureHostVarRows(varRows, currentURL());
 }
 
 function snapshotEnvironments() {
@@ -992,20 +1217,10 @@ function snapshotEnvironments() {
 }
 
 function renderEnvSelect() {
-  if (!el.envSelect) return;
-  const cur = activeEnv;
-  el.envSelect.innerHTML = '';
-  for (const e of environments) {
-    const opt = document.createElement('option');
-    opt.value = e.name;
-    opt.textContent = e.name;
-    el.envSelect.appendChild(opt);
-  }
-  if (environments.some((e) => e.name === cur)) el.envSelect.value = cur;
-  else if (environments.length) {
-    activeEnv = environments[0].name;
-    el.envSelect.value = activeEnv;
-  }
+  const names = environments.map((e) => e.name).filter(Boolean);
+  if (names.length && !names.includes(activeEnv)) activeEnv = names[0];
+  renderBarEnvSelect();
+  if (el.envEditName) el.envEditName.textContent = activeEnv || '';
 }
 
 function applyEnv(name) {
@@ -1016,13 +1231,15 @@ function applyEnv(name) {
   varRows = envRowsOf(env);
   renderEnvSelect();
   renderRequestEditor();
+  const hostURL = envConnectionURL(env);
+  lastHostVarURL = hostURL;
+  applyConnectionURL(hostURL);
 }
 
 async function onEnvSelectChange() {
-  const name = el.envSelect?.value || '';
-  if (!name || name === activeEnv) return;
-  applyEnv(name);
-  await persistProfile();
+  const name = el.barEnv?.value || '';
+  if (!name) return;
+  await selectEnvironment(name);
 }
 
 function uniqueEnvName(base) {
@@ -1035,6 +1252,30 @@ function uniqueEnvName(base) {
     if (cand && !used.has(cand)) return cand;
   }
   return clipText(`${short} ${Date.now()}`, 80);
+}
+
+function envNameFromURL(url) {
+  const host = hostFromURL(url) || profileNameFromURL(url) || String(url || '').trim();
+  return uniqueEnvName(host || '环境');
+}
+
+function findEnvByHostURL(url) {
+  const want = profileNameFromURL(url);
+  if (!want) return null;
+  return environments.find((e) => profileNameFromURL(envConnectionURL(e)) === want) || null;
+}
+
+function addEnvFromURL(url) {
+  const hit = findEnvByHostURL(url);
+  if (hit) {
+    applyEnv(hit.name);
+    return hit.name;
+  }
+  flushActiveEnv();
+  const name = envNameFromURL(url);
+  environments.push({ name, variables: ensureHostVarRows([], url) });
+  applyEnv(name);
+  return name;
 }
 
 async function addEnvironment() {
@@ -1055,9 +1296,10 @@ async function addEnvironment() {
   const name = clipEnvName(raw);
   if (!name) return;
   flushActiveEnv();
-  environments.push({ name, variables: [emptyRow()] });
+  environments.push({ name, variables: ensureHostVarRows([], currentURL()) });
   applyEnv(name);
   await persistProfile();
+  openEnvEdit();
 }
 
 async function duplicateEnvironment() {
@@ -1065,9 +1307,10 @@ async function duplicateEnvironment() {
   flushActiveEnv();
   const src = findEnv(activeEnv);
   const name = uniqueEnvName(`${src?.name || DEFAULT_ENV} 副本`);
-  environments.push({ name, variables: cloneRows(src?.variables) });
+  environments.push({ name, variables: ensureHostVarRows(src?.variables, currentURL()) });
   applyEnv(name);
   await persistProfile();
+  openEnvEdit();
 }
 
 async function renameEnvironment() {
@@ -1115,9 +1358,31 @@ async function deleteEnvironment() {
   await persistProfile();
 }
 
+function envEditOpen() {
+  return Boolean(el.envEdit && !el.envEdit.classList.contains('hidden'));
+}
+
+function closeEnvEdit() {
+  el.envEdit?.classList.add('hidden');
+}
+
+function openEnvEdit() {
+  if (!el.envEdit) return;
+  if (el.envEditName) el.envEditName.textContent = activeEnv || '';
+  el.envEdit.classList.remove('hidden');
+  renderRequestEditor();
+}
+
+function toggleEnvEdit() {
+  if (envEditOpen()) closeEnvEdit();
+  else openEnvEdit();
+}
+
 function openEnvMenu() {
   if (!el.btnEnvMore) return;
+  closeEnvEdit();
   openCatalogMenu(el.btnEnvMore, 'env', [
+    { act: 'vars', label: '编辑变量' },
     { act: 'add', label: '新建环境' },
     { act: 'duplicate', label: '复制环境' },
     { act: 'rename', label: '重命名' },
@@ -1208,6 +1473,31 @@ function setFillButton(on) {
   }
 }
 
+function setCopyDetailButton(on) {
+  if (!el.btnCopyDetail) return;
+  el.btnCopyDetail.classList.toggle('hidden', !on);
+  if (!on) el.btnCopyDetail.textContent = '复制';
+}
+
+function detailCopyText(m) {
+  if (!m) return '';
+  let raw = '';
+  if (m.dir === 'out') {
+    raw = m.exchange?.reqBody || m.ws?.out || m.text || m.pretty || '';
+  } else if (m.dir === 'in') {
+    raw = m.exchange?.resBody || m.ws?.in || m.pretty || m.text || '';
+  } else {
+    raw = m.pretty || m.text || '';
+  }
+  return prettyDocText(raw) || raw;
+}
+
+async function copySelectedDetail() {
+  const m = store.get(selectedId);
+  const ok = await copyText(detailCopyText(m));
+  flashButton(el.btnCopyDetail, ok ? '已复制' : '复制失败');
+}
+
 function flashFilled() {
   if (!el.btnFill || el.btnFill.classList.contains('hidden')) return;
   el.btnFill.textContent = '已填回';
@@ -1280,10 +1570,7 @@ function fillRecordResponse(ex) {
 }
 
 function selectProfileHost(url) {
-  const name = profileNameFromURL(url);
-  if (name && [...el.profile.options].some((o) => o.value === name)) {
-    el.profile.value = name;
-  }
+  renderProjectSelect();
 }
 
 function applyHTTPExchange(ex) {
@@ -1412,11 +1699,11 @@ function fillPlainMessage(m) {
 }
 
 function canFillFromMessage(m) {
-  if (!m) return false;
+  if (!m || m.dir !== 'out') return false;
   if (m.exchange || m.ws) return true;
   const near = siblingFillSource(m);
   if (near?.exchange || near?.ws) return true;
-  return m.dir === 'out' || m.dir === 'in';
+  return true;
 }
 
 function fillFromMessage(m) {
@@ -1429,12 +1716,260 @@ function fillFromMessage(m) {
   return fillPlainMessage(m);
 }
 
-/* —— profiles —— */
-async function applyProfile(p) {
+/* —— profiles / project + env —— */
+function readSel() {
+  try {
+    return JSON.parse(localStorage.getItem(SEL_KEY) || '{}') || {};
+  } catch {
+    return {};
+  }
+}
+
+function rememberSelection() {
+  try {
+    const prev = readSel();
+    const project = projectNameOf(currentProfile());
+    const envs = { ...(prev.envs || {}) };
+    if (project && activeEnv) envs[project] = activeEnv;
+    localStorage.setItem(SEL_KEY, JSON.stringify({
+      project,
+      env: activeEnv,
+      host: currentProfile()?.name || '',
+      envs,
+    }));
+  } catch {
+    /* ignore */
+  }
+}
+
+function lastEnvForProject(project) {
+  const sel = readSel();
+  const named = sel.envs?.[project];
+  if (named) return named;
+  if (sel.project === project && sel.env) return sel.env;
+  return firstEnvOfProject(project);
+}
+
+function projectNameOf(p) {
+  const named = String(p?.project || '').trim();
+  if (named) return named;
+  return String(p?.name || profileNameFromURL(p?.url) || '').trim();
+}
+
+function currentProjectName() {
+  return projectNameOf(currentProfile()) || String(el.project?.value || '').trim();
+}
+
+function isExplicitProject(name) {
+  const n = String(name || '').trim();
+  return Boolean(n) && !n.includes('://');
+}
+
+function profilesInProject(project) {
+  const name = String(project || '').trim();
+  if (!name) return [];
+  return (profiles || []).filter((p) => projectNameOf(p) === name);
+}
+
+function projectCatalogProfile(project) {
+  const members = profilesInProject(project);
+  if (!members.length) return null;
+  if (!isExplicitProject(project) || members.length === 1) return members[0];
+  let best = members[0];
+  for (const p of members) {
+    if ((p.requests || []).length > (best.requests || []).length) best = p;
+  }
+  return best;
+}
+
+function uniqueProjectNames() {
+  const out = [];
+  const seen = new Set();
+  for (const p of profiles || []) {
+    const name = projectNameOf(p);
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+  }
+  return out;
+}
+
+function envConnectionURL(env) {
+  const rows = Array.isArray(env?.variables) ? env.variables : [];
+  for (const key of ['host', 'baseUrl', 'base_url', 'baseURL', 'url', 'Host']) {
+    const row = rows.find((r) => String(r?.key || '').trim() === key && r?.enabled !== false && String(r?.value || '').trim());
+    if (row) return String(row.value).trim();
+  }
+  return '';
+}
+
+function connectionURLReady(url) {
+  const raw = String(url || '').trim();
+  const name = profileNameFromURL(raw);
+  if (!raw || !name) return false;
+  const host = hostFromURL(raw);
+  if (!host) return false;
+  if (host === 'localhost') return true;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return true;
+  if (/^[a-f0-9:]+$/i.test(host) && host.includes(':')) return true;
+  if (/[a-z]/i.test(host) && host.includes('.')) return true;
+  return false;
+}
+
+function applyConnectionURL(url) {
+  const raw = String(url || '').trim();
+  if (!connectionURLReady(raw)) return false;
+  const nextHost = profileNameFromURL(raw);
+  lastHostVarURL = raw;
+  if (currentURL() === raw && (profileNameFromURL(currentURL()) || activeProfileName) === nextHost) return false;
+  setURL(raw, nextHost);
+  applyTransportFromURL();
+  syncParamsFromURL();
+  return true;
+}
+
+function clearConnectionURL() {
+  lastHostVarURL = '';
+  if (!urlPrefix && !currentURL()) return false;
+  setURL('');
+  applyTransportFromURL();
+  syncParamsFromURL();
+  return true;
+}
+
+function findProjectEnvDef(project, envName) {
+  const want = String(envName || '').trim();
+  if (!want) return null;
+  let fallback = null;
+  for (const p of profilesInProject(project)) {
+    const hit = (p.environments || []).find((e) => String(e?.name || '').trim() === want);
+    if (!hit) continue;
+    if (connectionURLReady(envConnectionURL(hit))) return hit;
+    if (!fallback) fallback = hit;
+  }
+  return fallback || environments.find((e) => e.name === want) || null;
+}
+
+function projectEnvNames(project) {
+  const names = [];
+  const seen = new Set();
+  const add = (raw) => {
+    const n = String(raw || '').trim();
+    if (!n || seen.has(n)) return;
+    seen.add(n);
+    names.push(n);
+  };
+  for (const p of profilesInProject(project)) {
+    for (const e of p.environments || []) add(e?.name);
+  }
+  for (const e of environments) add(e?.name);
+  return names;
+}
+
+function profileForProjectEnv(project, envName) {
+  if (isExplicitProject(project)) {
+    const owner = projectCatalogProfile(project);
+    if (owner) return owner;
+  }
+  const members = profilesInProject(project);
+  if (!members.length) return null;
+  const envDef = findProjectEnvDef(project, envName);
+  const hostURL = envConnectionURL(envDef);
+  const hostName = profileNameFromURL(hostURL);
+  if (hostName) {
+    const hit = members.find((p) => p.name === hostName || profileNameFromURL(p.url) === hostName);
+    if (hit) return hit;
+  }
+  const usable = members.filter((p) => {
+    const e = (p.environments || []).find((x) => String(x?.name || '').trim() === envName);
+    return connectionURLReady(envConnectionURL(e)) || connectionURLReady(p.url);
+  });
+  if (envName) {
+    const byActive = usable.find((p) => String(p.activeEnv || '').trim() === envName);
+    if (byActive) return byActive;
+    if (usable.length) return usable[0];
+  }
+  return members[0];
+}
+
+function firstEnvOfProject(project) {
+  const names = projectEnvNames(project);
+  return names[0] || DEFAULT_ENV;
+}
+
+function fillSelect(node, items, selected) {
+  if (!node) return;
+  node.innerHTML = '';
+  for (const item of items) {
+    const opt = document.createElement('option');
+    opt.value = item;
+    opt.textContent = item;
+    node.appendChild(opt);
+  }
+  if (selected && items.includes(selected)) node.value = selected;
+  else if (items.length) node.value = items[0];
+}
+
+function renderBarEnvSelect() {
+  if (!el.barEnv) return;
+  const project = currentProjectName();
+  const names = projectEnvNames(project);
+  const cur = names.includes(activeEnv) ? activeEnv : (names[0] || '');
+  fillSelect(el.barEnv, names, cur);
+  el.barEnv.disabled = names.length === 0;
+}
+
+function renderProjectSelect() {
+  const projects = uniqueProjectNames();
+  const curProject = currentProjectName() || projects[0] || '';
+  fillSelect(el.project, projects, curProject);
+  if (el.project) el.project.disabled = projects.length === 0;
+  renderBarEnvSelect();
+  if (el.btnDelProfile) el.btnDelProfile.disabled = profiles.length === 0;
+}
+
+async function selectProject(name) {
+  closeEnvEdit();
+  const project = String(name || '').trim();
+  if (!project || project === currentProjectName()) {
+    renderProjectSelect();
+    return;
+  }
+  const hint = currentRequestHint();
+  const env = lastEnvForProject(project);
+  const target = profileForProjectEnv(project, env);
+  if (!target) {
+    renderProjectSelect();
+    return;
+  }
+  clearTimeout(persistTimer);
+  await persistProfile();
+  await applyProfile(target, hint);
+  if (env && activeEnv !== env) applyEnv(env);
+  if (hint) restoreRequestFromHint(hint);
+  rememberSelection();
+}
+
+async function selectEnvironment(name) {
+  const envName = String(name || '').trim();
+  if (!envName) return;
+  const project = currentProjectName();
+  if (envName !== activeEnv) applyEnv(envName);
+  const hostURL = envConnectionURL(findEnv(envName) || findProjectEnvDef(project, envName));
+  if (hostURL) applyConnectionURL(hostURL);
+  await persistProfile();
+  await activateCurrent();
+  await reloadLiveSession();
+  rememberSelection();
+  renderProjectSelect();
+}
+
+async function applyProfile(p, keepHint) {
   if (!p) return;
   if (!Array.isArray(p.modules)) p.modules = [];
   if (!Array.isArray(p.requests)) p.requests = [];
   if (!Array.isArray(p.environments)) p.environments = [];
+  activeProfileName = p.name || profileNameFromURL(p.url || p.name) || '';
   setURL(p.url || p.name || '', p.name);
   el.protocol.value = p.protocol || '';
   const method = (p.method || 'GET').toUpperCase();
@@ -1450,45 +1985,34 @@ async function applyProfile(p) {
   loadAuthFromProfile(p);
   loadBodyTypeFromProfile(p);
   loadBodyFromProfile(p);
+  lastHostVarURL = envConnectionURL(findEnv(activeEnv));
+  applyConnectionURL(lastHostVarURL);
   applyTransportFromURL();
   syncParamsFromURL();
   renderRequestEditor();
-  if (p.name && [...(el.profile?.options || [])].some((o) => o.value === p.name)) {
-    el.profile.value = p.name;
+  renderProjectSelect();
+  rememberSelection();
+  if (keepHint) restoreRequestFromHint(keepHint);
+  else {
+    setActiveSavedId(isHTTPMode() ? matchSavedId() : matchSavedWSId());
+    loadReqMeta(currentSavedRequest());
   }
-  setActiveSavedId(isHTTPMode() ? matchSavedId() : matchSavedWSId());
-  loadReqMeta(currentSavedRequest());
   renderCatalog();
   await activateCurrent();
 }
 
-function renderProfileSelect(selected) {
-  const cur = selected || el.profile.value;
-  el.profile.innerHTML = '';
-  for (const p of profiles) {
-    const opt = document.createElement('option');
-    opt.value = p.name;
-    opt.textContent = p.name;
-    el.profile.appendChild(opt);
-  }
-  if (cur && profiles.some((p) => p.name === cur)) {
-    el.profile.value = cur;
-  } else if (profiles.length) {
-    el.profile.value = profiles[0].name;
-  }
-  if (el.btnDelProfile) el.btnDelProfile.disabled = profiles.length === 0;
-}
-
 function clearEditor() {
+  lastHostVarURL = '';
   setURL('');
   if (el.protocol) el.protocol.value = '';
   if (el.method) el.method.value = 'GET';
   el.reconnect.checked = true;
   if (el.payload) el.payload.value = '';
+  if (el.payloadIn) el.payloadIn.value = '';
   paramRows = [emptyRow()];
   headerRows = [emptyRow()];
-  varRows = [emptyRow()];
-  environments = [{ name: DEFAULT_ENV, variables: [emptyRow()] }];
+  varRows = ensureHostVarRows([]);
+  environments = [{ name: DEFAULT_ENV, variables: ensureHostVarRows([]) }];
   activeEnv = DEFAULT_ENV;
   formRows = [emptyRow()];
   lastSent = '';
@@ -1498,6 +2022,7 @@ function clearEditor() {
   loadAuthFromProfile(null);
   loadBodyTypeFromProfile(null);
   applyTransportFromURL();
+  applyWorkMode();
   renderEnvSelect();
   renderRequestEditor();
   setActiveSavedId('');
@@ -1509,7 +2034,7 @@ let confirmResolver = null;
 let promptResolver = null;
 let promptValidate = null;
 let activeSavedId = '';
-const catalogClosedModules = new Set();
+const catalogOpenGroups = new Set();
 
 function confirmModalOpen() {
   return Boolean(el.confirmModal && !el.confirmModal.classList.contains('hidden'));
@@ -1593,8 +2118,9 @@ function askConfirm({ title, message, okText }) {
 }
 
 async function deleteCurrentProfile() {
-  const name = el.profile?.value || profileNameFromURL(currentURL());
+  const name = currentProfile()?.name || profileNameFromURL(currentURL());
   if (!name) return;
+  const project = currentProjectName();
   const ok = await askConfirm({
     title: '删除地址',
     message: `确定删除 ${name} ？此操作不可恢复。`,
@@ -1611,11 +2137,10 @@ async function deleteCurrentProfile() {
   if (activeProfileName === name) activeProfileName = '';
   profiles = profiles.filter((p) => p.name !== name);
   if (profiles.length) {
-    const next = profiles[0];
-    renderProfileSelect(next.name);
+    const next = profilesInProject(project)[0] || profiles[0];
     await applyProfile(next);
   } else {
-    renderProfileSelect('');
+    renderProjectSelect();
     clearEditor();
     openUrlModal();
   }
@@ -1623,11 +2148,20 @@ async function deleteCurrentProfile() {
 
 async function loadProfiles() {
   profiles = (await GetProfiles()) || [];
-  renderProfileSelect();
   if (profiles.length) {
-    const cur = profiles.find((p) => p.name === el.profile.value) || profiles[0];
-    await applyProfile(cur);
+    const sel = readSel();
+    let cur = null;
+    if (sel.project) cur = profileForProjectEnv(sel.project, lastEnvForProject(sel.project));
+    if (!cur && sel.host) {
+      cur = profiles.find((p) => p.name === sel.host)
+        || profiles.find((p) => (p.environments || []).some((e) => profileNameFromURL(envConnectionURL(e)) === sel.host))
+        || null;
+    }
+    await applyProfile(cur || profiles[0]);
+    const env = lastEnvForProject(currentProjectName());
+    if (env && activeEnv !== env) applyEnv(env);
   } else {
+    renderProjectSelect();
     clearEditor();
     openUrlModal();
   }
@@ -1689,10 +2223,23 @@ async function submitUrlModal() {
   const url = normalizeDialURL(raw);
   const name = profileNameFromURL(url);
   const existing = name ? profiles.find((p) => p.name === name) : null;
+  const inheritProject = isExplicitProject(currentProjectName()) ? currentProjectName() : '';
   closeUrlModal();
+  if (inheritProject && !existing) {
+    const owner = projectCatalogProfile(inheritProject) || currentProfile();
+    if (owner) {
+      if (currentProfile()?.name !== owner.name) {
+        await persistProfile();
+        await applyProfile(owner);
+      }
+      addEnvFromURL(url);
+      await persistProfile();
+      return;
+    }
+  }
   const prevName = profileNameFromURL(currentURL());
   if (prevName && prevName !== name) {
-    await persistProfile(existing ? name : prevName);
+    await persistProfile();
   }
   if (existing) {
     await applyProfile({ ...existing, url });
@@ -1702,6 +2249,7 @@ async function submitUrlModal() {
   clearTimeout(persistTimer);
   clearEditor();
   setURL(url, name);
+  ensureCurrentProfile();
   applyTransportFromURL();
   syncParamsFromURL();
   renderRequestEditor();
@@ -1813,7 +2361,7 @@ async function copyCurl(fromDetail) {
 }
 
 function currentProfile() {
-  const name = profileNameFromURL(currentURL()) || activeProfileName || el.profile?.value || '';
+  const name = activeProfileName || profileNameFromURL(currentURL()) || '';
   if (!name) return null;
   return profiles.find((p) => p.name === name) || null;
 }
@@ -1969,6 +2517,7 @@ function onReqMetaInput() {
     req.module = currentReqModule();
     req.description = currentReqDesc();
     renderCatalog();
+    if (isDocMode()) renderDocPane();
   }
   schedulePersist();
 }
@@ -2024,14 +2573,17 @@ function currentModules() {
 }
 
 function ensureCurrentProfile() {
+  let p = currentProfile();
+  if (p) {
+    if (!Array.isArray(p.requests)) p.requests = [];
+    if (!Array.isArray(p.modules)) p.modules = [];
+    return p;
+  }
   const host = profileNameFromURL(currentURL());
   if (!host) return null;
-  let p = currentProfile();
-  if (!p) {
-    p = { name: host, url: currentURL(), requests: [], modules: [], environments: [], activeEnv: '' };
-    profiles.push(p);
-    profiles.sort((a, b) => String(a.name).localeCompare(String(b.name)));
-  }
+  p = { name: host, url: currentURL(), project: '', requests: [], modules: [], environments: [], activeEnv: '' };
+  profiles.push(p);
+  profiles.sort((a, b) => String(a.name).localeCompare(String(b.name)));
   if (!Array.isArray(p.requests)) p.requests = [];
   if (!Array.isArray(p.modules)) p.modules = [];
   return p;
@@ -2171,7 +2723,7 @@ function catalogHostName(p) {
 }
 
 function currentCatalogHost() {
-  return profileNameFromURL(currentURL()) || activeProfileName || el.profile?.value || '';
+  return profileNameFromURL(currentURL()) || activeProfileName || currentProfile()?.name || '';
 }
 
 function catalogSearchHits(kw) {
@@ -2198,10 +2750,10 @@ function groupCatalogHits(hits) {
 }
 
 function catalogItemLabel(r) {
-  if (isHTTPSaved(r)) {
-    return requestDisplayTitle(r) || requestItemPath(r) || r?.name || '';
-  }
-  return requestDisplayTitle(r) || wsCmdLabel(r) || oneLinePreview(r?.body || r?.name || '', 48);
+  const title = requestDisplayTitle(r);
+  if (title) return title;
+  if (isHTTPSaved(r)) return requestItemPath(r) || r?.name || '未命名接口';
+  return wsCmdLabel(r) || '未命名接口';
 }
 
 function groupCatalogRequests(reqs) {
@@ -2224,13 +2776,24 @@ function appendCatalogAddModule() {
   el.catalogList.appendChild(add);
 }
 
+function catalogIcon(cls, svgInner) {
+  const span = document.createElement('span');
+  span.className = cls;
+  span.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true">${svgInner}</svg>`;
+  return span;
+}
+
+const ICO_FOLDER = '<path d="M2.4 4.5c0-.6.5-1.1 1.1-1.1h2.15l1.2 1.35h5.65c.6 0 1.1.5 1.1 1.1v6.15c0 .6-.5 1.1-1.1 1.1H3.5c-.6 0-1.1-.5-1.1-1.1V4.5z" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round"/>';
+const ICO_HOST = '<path d="M3 4.2h10v6.3H3zM5.6 12.4h4.8M8 10.5v1.9" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/>';
+const ICO_API = '<path d="M4.4 2.6h5L11.6 5v8.4H4.4zM9.4 2.6V5h2.2" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/>';
+
 function makeCatalogGroupHead(group, kw) {
   const head = document.createElement('div');
   head.className = 'catalog-group';
   head.dataset.module = group.module;
   head.dataset.closeKey = group.module || '';
   if (!kw && group.module) head.draggable = true;
-  const closed = !kw && catalogClosedModules.has(group.module);
+  const closed = !kw && !catalogOpenGroups.has(group.module || '');
   const caret = document.createElement('span');
   caret.className = 'catalog-caret';
   caret.textContent = closed ? '▸' : '▾';
@@ -2250,6 +2813,7 @@ function makeCatalogGroupHead(group, kw) {
   more.draggable = false;
   more.textContent = '⋯';
   head.appendChild(caret);
+  head.appendChild(catalogIcon('catalog-kind catalog-kind-folder', ICO_FOLDER));
   head.appendChild(name);
   head.appendChild(count);
   head.appendChild(more);
@@ -2261,7 +2825,7 @@ function makeCatalogHostHead(group, currentHost) {
   head.className = 'catalog-group host' + (group.host === currentHost ? ' current' : '');
   head.dataset.host = group.host;
   head.dataset.closeKey = `host:${group.host}`;
-  const closed = catalogClosedModules.has(head.dataset.closeKey);
+  const closed = false;
   const caret = document.createElement('span');
   caret.className = 'catalog-caret';
   caret.textContent = closed ? '▸' : '▾';
@@ -2273,6 +2837,7 @@ function makeCatalogHostHead(group, currentHost) {
   count.className = 'catalog-group-count';
   count.textContent = String(group.items.length);
   head.appendChild(caret);
+  head.appendChild(catalogIcon('catalog-kind catalog-kind-host', ICO_HOST));
   head.appendChild(name);
   head.appendChild(count);
   return { head, closed };
@@ -2331,6 +2896,7 @@ function placeGroupMenu(anchor) {
 }
 
 function openCatalogMenu(anchor, key, items) {
+  hideCatalogTip();
   if (!el.groupMenu || !anchor) return;
   if (groupMenuOpen() && catalogMenuKey === key) {
     closeGroupMenu();
@@ -2372,7 +2938,8 @@ function onGroupMenuClick(e) {
   const key = catalogMenuKey;
   closeGroupMenu();
   if (key === 'env') {
-    if (act === 'add') addEnvironment();
+    if (act === 'vars') openEnvEdit();
+    else if (act === 'add') addEnvironment();
     else if (act === 'duplicate') duplicateEnvironment();
     else if (act === 'rename') renameEnvironment();
     else if (act === 'delete') deleteEnvironment();
@@ -2392,6 +2959,7 @@ function onGroupMenuClick(e) {
 }
 
 function renderCatalog() {
+  hideCatalogTip();
   closeGroupMenu();
   fillModuleList();
   if (!el.catalogList) return;
@@ -2475,67 +3043,18 @@ function makeCatalogItem(r, kw, host) {
   item.dataset.id = r.id;
   if (host) item.dataset.host = host;
   if (!kw && r.id) item.draggable = true;
+  item.appendChild(catalogIcon('catalog-kind catalog-kind-api', ICO_API));
   const main = document.createElement('div');
   main.className = 'catalog-item-main';
   const line = document.createElement('div');
   line.className = 'catalog-item-line';
-  if (isHTTPSaved(r)) {
-    const method = String(r.method || 'GET').toUpperCase();
-    const path = requestItemPath(r);
-    const title = requestDisplayTitle(r);
-    const desc = requestDescription(r);
-    item.title = [host && host !== currentCatalogHost() ? host : '', title, `${method} ${path}`, desc].filter(Boolean).join('\n');
-    const m = document.createElement('span');
-    m.className = `saved-item-method ${method.toLowerCase()}`;
-    fillHighlighted(m, method, kw);
-    line.appendChild(m);
-    const head = document.createElement('span');
-    head.className = title ? 'saved-item-title' : 'saved-item-path';
-    fillHighlighted(head, title || path, kw);
-    line.appendChild(head);
-    main.appendChild(line);
-    const subParts = [];
-    if (kw && requestModuleName(r)) subParts.push(requestModuleName(r));
-    if (title) subParts.push(path);
-    if (desc) subParts.push(desc);
-    if (subParts.length) {
-      const sub = document.createElement('div');
-      sub.className = 'catalog-item-sub';
-      fillHighlighted(sub, subParts.join(' · '), kw);
-      main.appendChild(sub);
-    }
-  } else {
-    const title = requestDisplayTitle(r);
-    const cmd = wsCmdLabel(r);
-    const preview = oneLinePreview(r.body || r.name || '', 64);
-    const desc = requestDescription(r);
-    item.title = [host && host !== currentCatalogHost() ? host : '', title, cmd, preview, desc].filter(Boolean).join('\n');
-    const headText = title || cmd || preview;
-    if (headText) {
-      const n = document.createElement('span');
-      n.className = title ? 'saved-item-title' : 'saved-item-cmd';
-      fillHighlighted(n, headText, kw);
-      line.appendChild(n);
-    }
-    if (title && cmd && cmd !== title) {
-      const c = document.createElement('span');
-      c.className = 'saved-item-cmd';
-      fillHighlighted(c, cmd, kw);
-      line.appendChild(c);
-    }
-    if (line.childNodes.length) main.appendChild(line);
-    const subParts = [];
-    if (kw && requestModuleName(r)) subParts.push(requestModuleName(r));
-    if (preview && preview !== headText) subParts.push(preview);
-    if (desc) subParts.push(desc);
-    if (subParts.length) {
-      const sub = document.createElement('div');
-      sub.className = 'catalog-item-sub';
-      fillHighlighted(sub, subParts.join(' · '), kw);
-      main.appendChild(sub);
-    }
-  }
+  const head = document.createElement('span');
+  head.className = 'catalog-item-title';
+  fillHighlighted(head, catalogItemLabel(r), kw);
+  line.appendChild(head);
+  main.appendChild(line);
   item.appendChild(main);
+  catalogTipStore.set(item, catalogTipHTML(r, host));
   if (!kw) {
     const more = document.createElement('button');
     more.type = 'button';
@@ -2549,6 +3068,113 @@ function makeCatalogItem(r, kw, host) {
     item.appendChild(more);
   }
   return item;
+}
+
+const catalogTipStore = new WeakMap();
+let catalogTipItem = null;
+
+function catalogRequestBody(r) {
+  if (!r) return '';
+  if (isHTTPSaved(r)) {
+    if (r.bodyType === 'none') return '';
+    if (r.bodyType === 'form') return formEncode(r.formList || []);
+    return r.body || '';
+  }
+  return r.body || '';
+}
+
+function catalogTipHTML(r, host) {
+  const http = isHTTPSaved(r);
+  const title = catalogItemLabel(r);
+  const method = http ? String(r.method || 'GET').toUpperCase() : 'WS';
+  const path = http ? (requestItemPath(r) || '/') : (wsCmdLabel(r) || '');
+  const url = String(r.url || '').trim();
+  const desc = requestDescription(r);
+  const hid = String(host || '').trim();
+  const body = catalogRequestBody(r);
+  const parts = [
+    `<div class="catalog-tip-title">${escapeHtml(title)}</div>`,
+    `<div class="catalog-tip-sum">` +
+      `<span class="saved-item-method ${http ? method.toLowerCase() : 'ws'}">${escapeHtml(method)}</span>` +
+      (path ? `<span class="catalog-tip-path">${escapeHtml(path)}</span>` : '') +
+    `</div>`,
+  ];
+  if (hid && hid !== currentCatalogHost()) {
+    parts.push(`<div class="catalog-tip-meta">${escapeHtml(hid)}</div>`);
+  }
+  if (url) parts.push(`<div class="catalog-tip-meta">${escapeHtml(url)}</div>`);
+  if (desc) parts.push(`<div class="catalog-tip-desc">${escapeHtml(desc)}</div>`);
+  if (http) {
+    const headers = renderDocTable('请求头', r.headerList);
+    const params = renderDocTable('Query', parseQuery(r.url || ''));
+    const auth = renderDocAuth(r);
+    if (params) parts.push(params);
+    if (headers) parts.push(headers);
+    if (auth) parts.push(auth);
+  }
+  parts.push(`<div class="catalog-tip-sec">请求</div>`);
+  if (http && r.bodyType === 'form') {
+    parts.push(renderDocTable('表单', r.formList) || '<div class="doc-muted">无</div>');
+  } else {
+    parts.push(renderDocCode(body));
+  }
+  return parts.join('');
+}
+
+function ensureCatalogTip() {
+  if (el.catalogTip && el.catalogTip.isConnected) return el.catalogTip;
+  let tip = document.getElementById('catalogTip');
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.id = 'catalogTip';
+    tip.className = 'catalog-tip';
+    tip.hidden = true;
+    (el.app || document.body).appendChild(tip);
+  }
+  el.catalogTip = tip;
+  return tip;
+}
+
+function hideCatalogTip() {
+  catalogTipItem = null;
+  const tip = el.catalogTip || document.getElementById('catalogTip');
+  if (!tip) return;
+  tip.hidden = true;
+  tip.classList.remove('is-on');
+  tip.innerHTML = '';
+}
+
+function placeCatalogTip() {
+  const tip = ensureCatalogTip();
+  const pane = el.catalogPane?.getBoundingClientRect();
+  const bar = document.querySelector('.bar')?.getBoundingClientRect();
+  const left = Math.round((pane?.right || 220) + 8);
+  const top = Math.round((bar?.bottom || 48) + 8);
+  tip.style.left = `${left}px`;
+  tip.style.top = `${top}px`;
+  tip.style.width = `${Math.max(280, Math.min(520, window.innerWidth - left - 16))}px`;
+  tip.style.maxHeight = `${Math.max(160, window.innerHeight - top - 16)}px`;
+}
+
+function fillCatalogTip(item) {
+  if (!item || catalogDrag) return;
+  const html = catalogTipStore.get(item);
+  if (!html) return;
+  const tip = ensureCatalogTip();
+  catalogTipItem = item;
+  tip.innerHTML = html;
+  tip.hidden = false;
+  tip.classList.add('is-on');
+  placeCatalogTip();
+}
+
+function onCatalogHover(e) {
+  const item = e.target?.closest?.('.catalog-item');
+  if (!item || !el.catalogList?.contains(item) || e.target.closest('.catalog-more')) {
+    if (!e.target?.closest?.('.catalog-item')) hideCatalogTip();
+    return;
+  }
+  if (item !== catalogTipItem) fillCatalogTip(item);
 }
 
 function clearCatalogDropMarks() {
@@ -2656,6 +3282,7 @@ function moveRequestToModule(id, destModule, targetId, before) {
 }
 
 function onCatalogDragStart(e) {
+  hideCatalogTip();
   if (moduleRun || catalogFilterKeyword() || e.target?.closest?.('.catalog-more, .catalog-add-module')) {
     e.preventDefault();
     return;
@@ -2731,7 +3358,7 @@ function onCatalogDrop(e) {
       const targetId = item?.dataset?.id || '';
       if (targetId) changed = moveRequestToModule(catalogDrag.id, destModule, targetId, dest.where === 'before');
     }
-    if (changed) catalogClosedModules.delete(destModule);
+    if (changed) catalogOpenGroups.add(destModule);
   }
   clearCatalogDragState();
   catalogDrag = null;
@@ -2780,8 +3407,8 @@ function onCatalogClick(e) {
   const group = e.target?.closest?.('.catalog-group');
   if (group && el.catalogList?.contains(group)) {
     const key = group.dataset.closeKey || group.dataset.module || '';
-    if (catalogClosedModules.has(key)) catalogClosedModules.delete(key);
-    else catalogClosedModules.add(key);
+    if (catalogOpenGroups.has(key)) catalogOpenGroups.delete(key);
+    else catalogOpenGroups.add(key);
     renderCatalog();
     return;
   }
@@ -2921,7 +3548,7 @@ async function addCatalogModule() {
   if (raw == null) return;
   const name = rememberModule(raw);
   if (!name) return;
-  catalogClosedModules.delete(name);
+  catalogOpenGroups.add(name);
   renderCatalog();
   await persistProfile();
 }
@@ -2942,9 +3569,9 @@ async function renameCatalogModule(from) {
   const to = clipText(raw, 80);
   if (!to || to === from) return;
   if (!renameModule(from, to)) return;
-  if (catalogClosedModules.has(from)) {
-    catalogClosedModules.delete(from);
-    catalogClosedModules.add(to);
+  if (catalogOpenGroups.has(from)) {
+    catalogOpenGroups.delete(from);
+    catalogOpenGroups.add(to);
   }
   renderCatalog();
   await persistProfile();
@@ -2961,13 +3588,14 @@ async function deleteCatalogModule(name) {
   });
   if (!ok) return;
   clearModule(name);
-  catalogClosedModules.delete(name);
+  catalogOpenGroups.delete(name);
   renderCatalog();
   await persistProfile();
 }
 
 async function saveCurrentRequest() {
   if (!requireURL()) return;
+  flushDocEditors();
   const p = ensureCurrentProfile();
   if (!p) return;
   if (activeSavedId && currentSavedRequest()) {
@@ -2979,7 +3607,7 @@ async function saveCurrentRequest() {
   const module = currentReqModule();
   if (module) rememberModule(module);
   await persistProfile();
-  flashButton(isHTTPMode() ? el.btnSaveReq : el.btnSaveWS, '已保存');
+  if (!isDocMode()) flashButton(isHTTPMode() ? el.btnSaveReq : el.btnSaveWS, '已保存');
   setActiveSavedId(activeSavedId);
   loadReqMeta(currentSavedRequest());
   renderCatalog();
@@ -2990,10 +3618,100 @@ function currentSavedRequest() {
   return currentProfileRequests().find((r) => r.id === activeSavedId) || null;
 }
 
+function currentRequestHint() {
+  return requestHintFrom(currentSavedRequest());
+}
+
+function requestHintFrom(r) {
+  if (!r) return null;
+  const http = isHTTPSaved(r);
+  return {
+    id: String(r.id || ''),
+    title: String(r.title || '').trim(),
+    label: catalogItemLabel(r),
+    module: requestModuleName(r),
+    http,
+    method: http ? String(r.method || 'GET').toUpperCase() : '',
+    path: http ? (requestItemPath(r) || '') : '',
+    cmd: http ? '' : wsMessageKey(r.body || ''),
+  };
+}
+
+function findEquivalentRequest(hint) {
+  if (!hint) return null;
+  const reqs = currentProfileRequests();
+  if (!reqs.length) return null;
+  if (hint.id) {
+    const byId = reqs.find((r) => r.id === hint.id);
+    if (byId) return byId;
+  }
+  const pool = reqs.filter((r) => isHTTPSaved(r) === Boolean(hint.http));
+  const list = pool.length ? pool : reqs;
+  const titled = hint.title
+    ? list.filter((r) => String(r.title || '').trim() === hint.title)
+    : [];
+  if (titled.length) {
+    if (hint.module) {
+      const inMod = titled.find((r) => requestModuleName(r) === hint.module);
+      if (inMod) return inMod;
+    }
+    if (titled.length === 1) return titled[0];
+    if (hint.path) {
+      const byPath = titled.find((r) => requestItemPath(r) === hint.path);
+      if (byPath) return byPath;
+    }
+    if (hint.cmd) {
+      const byCmd = titled.find((r) => wsMessageKey(r.body || '') === hint.cmd);
+      if (byCmd) return byCmd;
+    }
+    return titled[0];
+  }
+  if (hint.http && hint.path) {
+    const key = `${hint.method || 'GET'} ${hint.path}`;
+    const byKey = list.find((r) => requestKeyFrom(r) === key);
+    if (byKey) return byKey;
+    const byPath = list.find((r) => requestItemPath(r) === hint.path);
+    if (byPath) return byPath;
+  }
+  if (!hint.http && hint.cmd) {
+    const byCmd = list.find((r) => wsMessageKey(r.body || '') === hint.cmd);
+    if (byCmd) return byCmd;
+  }
+  if (hint.label) {
+    const labeled = list.filter((r) => catalogItemLabel(r) === hint.label);
+    if (hint.module) {
+      const inMod = labeled.find((r) => requestModuleName(r) === hint.module);
+      if (inMod) return inMod;
+    }
+    if (labeled.length === 1) return labeled[0];
+  }
+  return null;
+}
+
+function restoreRequestFromHint(hint) {
+  const req = findEquivalentRequest(hint);
+  if (!req) {
+    setActiveSavedId('');
+    loadReqMeta(null);
+    if (isDocMode()) renderDocPane();
+    return false;
+  }
+  if (isHTTPSaved(req)) applySavedRequest(req);
+  else applySavedWSMessage(req);
+  const mod = requestModuleName(req);
+  catalogOpenGroups.add(mod);
+  setActiveSavedId(req.id);
+  loadReqMeta(req);
+  if (isDocMode()) renderDocPane();
+  renderCatalog();
+  return true;
+}
+
 function setActiveSavedId(id) {
   if (id !== undefined) activeSavedId = id || '';
   const reqs = isHTTPMode() ? currentHTTPRequests() : currentWSMessages();
   if (activeSavedId && !reqs.some((r) => r.id === activeSavedId)) activeSavedId = '';
+  if (isDocMode()) renderDocPane();
   return activeSavedId;
 }
 
@@ -3041,7 +3759,7 @@ function newRequestId() {
   return `${Date.now().toString(16)}${Math.random().toString(16).slice(2, 10)}`;
 }
 
-function snapshotCurrentRequest(name, id) {
+function snapshotCurrentRequest(name, id, extra) {
   const prev = id ? currentProfileRequests().find((r) => r.id === id) : null;
   return {
     id: id || '',
@@ -3060,12 +3778,13 @@ function snapshotCurrentRequest(name, id) {
     authUser: el.authUser?.value || authState.user || '',
     authPass: el.authPass?.value || authState.pass || '',
     bodyType: currentBodyType(),
-    body: currentBody(),
+    body: extra?.body !== undefined ? extra.body : currentBody(),
     formList: cloneRows(formRows),
+    example: extra?.example !== undefined ? extra.example : (prev?.example || ''),
   };
 }
 
-function snapshotWSMessage(name, id) {
+function snapshotWSMessage(name, id, extra) {
   const prev = id ? currentProfileRequests().find((r) => r.id === id) : null;
   return {
     id: id || '',
@@ -3077,20 +3796,32 @@ function snapshotWSMessage(name, id) {
     kind: 'ws',
     url: currentURL(),
     protocol: el.protocol?.value?.trim() || '',
-    body: el.payload?.value || '',
+    body: extra?.body !== undefined ? extra.body : (el.payload?.value || ''),
+    example: extra?.example !== undefined ? extra.example : currentExample(prev),
   };
+}
+
+function currentExample(prev) {
+  if (el.payloadIn) return el.payloadIn.value || '';
+  return prev?.example || recordDraft.in || '';
 }
 
 function applySavedRequest(req) {
   if (!req) return false;
+  recordDraft.resBody = req.example || '';
   const lock = profileNameFromURL(currentURL()) || activeProfileName || '';
   const raw = String(req.url || '').trim();
-  const reqHost = profileNameFromURL(raw);
-  if (lock && reqHost && reqHost !== lock) {
-    const rest = splitLockedURL(raw).rest;
-    setURL(rest ? lock + rest : lock, lock);
-  } else if (raw) {
-    setURL(raw, lock || reqHost);
+  if (raw.includes('{{')) {
+    const rest = splitLockedURL(expandVars(raw, varsFromRows(varRows)) || '').rest;
+    if (lock && rest) setURL(lock + rest, lock);
+  } else {
+    const reqHost = profileNameFromURL(raw);
+    if (lock && reqHost && reqHost !== lock) {
+      const rest = splitLockedURL(raw).rest;
+      setURL(rest ? lock + rest : lock, lock);
+    } else if (raw) {
+      setURL(raw, lock || reqHost);
+    }
   }
   if (el.protocol) el.protocol.value = req.protocol || '';
   const method = (req.method || 'GET').toUpperCase();
@@ -3114,6 +3845,8 @@ function applySavedWSMessage(req) {
   if (!req || !el.payload) return false;
   el.payload.value = req.body || '';
   lastSent = el.payload.value;
+  recordDraft.in = req.example || '';
+  if (el.payloadIn) el.payloadIn.value = req.example || '';
   loadReqMeta(req);
   return true;
 }
@@ -3127,7 +3860,7 @@ function savedRequestHaystack(r) {
   const http = HTTP_SCHEMES.has(urlScheme(r?.url));
   const method = http ? String(r?.method || 'GET').toUpperCase() : '';
   const path = requestItemPath(r);
-  return `${method} ${path} ${r?.name || ''} ${r?.title || ''} ${r?.description || ''} ${r?.module || ''} ${r?.url || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
+  return `${method} ${path} ${r?.name || ''} ${r?.title || ''} ${r?.description || ''} ${r?.module || ''} ${r?.url || ''} ${r?.example || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
 function savedRequestMatches(r, kw) {
@@ -3164,7 +3897,7 @@ function fillHighlighted(node, text, kw) {
 }
 
 function savedWSHaystack(r) {
-  return `${r?.name || ''} ${r?.title || ''} ${r?.description || ''} ${r?.module || ''} ${r?.body || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
+  return `${r?.name || ''} ${r?.title || ''} ${r?.description || ''} ${r?.module || ''} ${r?.body || ''} ${r?.example || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
 function savedWSMatches(r, kw) {
@@ -3219,7 +3952,7 @@ async function deleteNamedRequest(id) {
     okText: '删除',
   });
   if (!ok) return;
-  const name = profileNameFromURL(currentURL()) || activeProfileName;
+  const name = activeProfileName || currentProfile()?.name || profileNameFromURL(currentURL());
   if (!name) return;
   try {
     await DeleteRequest(name, req.id);
@@ -3257,10 +3990,12 @@ async function pickSavedWSMessage(id) {
 async function persistProfile(selectName) {
   if (typeof selectName !== 'string') selectName = '';
   flushReqMeta();
+  flushDocEditors();
   if (activeSavedId) syncActiveRequestSnapshot();
-  const url = currentURL();
-  const name = profileNameFromURL(url);
+  const name = activeProfileName || profileNameFromURL(currentURL());
   if (!name) return;
+  const prev = profiles.find((x) => x.name === name);
+  const url = prev?.url || currentURL() || name;
   const module = currentReqModule();
   if (module && activeSavedId) rememberModule(module);
   authState = {
@@ -3269,9 +4004,12 @@ async function persistProfile(selectName) {
     user: el.authUser?.value || '',
     pass: el.authPass?.value || '',
   };
+  const cur = profiles.find((x) => x.name === name) || currentProfile();
+  const src = cur || prev;
   const p = {
     name,
     url,
+    project: src?.project || (isExplicitProject(el.project?.value) ? String(el.project.value).trim() : ''),
     protocol: el.protocol.value.trim(),
     method: el.method?.value || 'GET',
     headers: currentHeaders(),
@@ -3289,8 +4027,8 @@ async function persistProfile(selectName) {
     reconnect: el.reconnect.checked,
     pingSec: 20,
     noFollowRedirects: el.followRedirects ? !el.followRedirects.checked : false,
-    requests: currentProfileRequests(),
-    modules: [...(currentProfile()?.modules || [])],
+    requests: Array.isArray(src?.requests) ? src.requests : [],
+    modules: [...(src?.modules || [])],
   };
   try {
     await SaveProfile(p);
@@ -3300,7 +4038,8 @@ async function persistProfile(selectName) {
       profiles.push(p);
       profiles.sort((a, b) => String(a.name).localeCompare(String(b.name)));
     }
-    renderProfileSelect(selectName || name);
+    renderProjectSelect();
+    rememberSelection();
     renderCatalog();
   } catch (_) {}
 }
@@ -3312,7 +4051,6 @@ async function applyImportedCatalog(merged) {
     profiles.push(merged);
     profiles.sort((a, b) => String(a.name).localeCompare(String(b.name)));
   }
-  renderProfileSelect(name);
   const p = (name && profiles.find((x) => x.name === name)) || merged;
   if (!p) return;
   await applyProfile(p);
@@ -3334,7 +4072,7 @@ async function exportCatalog() {
 async function importCatalog() {
   const ok = await askConfirm({
     title: '导入接口',
-    message: '按文件里的主机写入，没有就会新建；多个主机会拆开。当前打开的地址不会被改，除非文件就是它。本机目录按 id 覆盖，Postman Collection 全部作为新接口追加。',
+    message: '按文件里的主机写入，没有就会新建；多个主机会拆开。当前打开的地址不会被改，除非文件就是它。本机目录按 id 覆盖，Postman Collection / ApiZza 项目全部作为新接口追加。',
     okText: '选择文件',
   });
   if (!ok) return;
@@ -3478,9 +4216,10 @@ async function sendMsg() {
 
 async function formatPayload() {
   const text = el.payload?.value || '';
-  if (!text.trim()) return;
-  el.payload.value = await FormatJSON(text);
-  schedulePersist();
+  if (text.trim()) el.payload.value = await FormatJSON(text);
+  const ret = el.payloadIn?.value || '';
+  if (ret.trim()) el.payloadIn.value = await FormatJSON(ret);
+  if (text.trim() || ret.trim()) schedulePersist();
 }
 
 async function formatRecordField(target) {
@@ -3522,11 +4261,11 @@ function applyRecordDraftToForm() {
 
 function openRecordModal() {
   const http = isHTTPMode();
-  if (el.recordTitle) el.recordTitle.textContent = http ? '手动记录 HTTP' : '手动记录 WebSocket';
+  if (el.recordTitle) el.recordTitle.textContent = http ? '保存到接口 · HTTP' : '保存到接口 · WebSocket';
   if (el.recordHint) {
     el.recordHint.textContent = http
-      ? '不会发送。方法、地址、请求头用当前编辑器；这里补请求体和响应体。'
-      : '不会发送，只保存一对发送 / 返回。';
+      ? '不会发送。方法、地址、请求头用当前编辑器；这里补请求体和响应体，保存到左侧接口。'
+      : '不会发送。发送内容作为接口，返回记在这条接口上，保存到左侧。';
   }
   if (el.recordMeta) {
     const method = (el.method?.value || 'GET').toUpperCase();
@@ -3543,6 +4282,7 @@ function openRecordModal() {
     applyRecordDraftToForm();
   } else if (el.recOut) {
     el.recOut.value = el.payload?.value || '';
+    recordDraft.in = el.payloadIn?.value || recordDraft.in || '';
     applyRecordDraftToForm();
   }
   el.recordModal?.classList.remove('hidden');
@@ -3569,68 +4309,78 @@ async function saveRecord() {
   return recordWS();
 }
 
+function putSavedRequest(req, match) {
+  const p = ensureCurrentProfile();
+  if (!p || !req) return '';
+  const list = Array.isArray(p.requests) ? p.requests.slice() : [];
+  let i = -1;
+  if (typeof match === 'function') i = list.findIndex(match);
+  if (i < 0 && req.id) i = list.findIndex((r) => r.id === req.id);
+  if (i >= 0) {
+    req.id = list[i].id;
+    list[i] = req;
+  } else {
+    if (!req.id) req.id = newRequestId();
+    list.push(req);
+  }
+  p.requests = list;
+  return req.id;
+}
+
+async function saveRecordToCatalog(req, match) {
+  const id = putSavedRequest(req, match);
+  if (!id) {
+    setRecordError('请先填写地址');
+    return false;
+  }
+  setActiveSavedId(id);
+  loadReqMeta(req);
+  catalogOpenGroups.add(requestModuleName(req) || '');
+  await persistProfile();
+  renderCatalog();
+  flashCatalogTitle('已保存到接口');
+  return true;
+}
+
 async function recordHTTP() {
   if (sending) return;
   if (!isHTTPMode()) return;
-  const url = currentURL();
-  if (!url) {
+  if (!currentURL() || !profileNameFromURL(currentURL())) {
     setRecordError('请先填写 URL');
     return;
   }
-  setBusy(true);
-  setRecordError('');
-  try {
-    if (historyMode) await exitHistoryMode();
-    await activateCurrent();
-    await persistProfile();
-    const ex = await RecordHTTP(currentRecordedExchange());
-    readRecordForm();
-    closeRecordModal();
-    if (ex) {
-      setDetailHtml(renderHTTPExchange(ex));
-    }
-  } catch (e) {
-    setRecordError(String(e));
-  } finally {
-    setBusy(false);
-  }
+  const reqBody = el.recReqBody?.value || '';
+  const resBody = el.recResBody?.value || '';
+  if (el.payload) el.payload.value = reqBody;
+  lastSent = reqBody;
+  const key = currentRequestKey();
+  const req = snapshotCurrentRequest(key || 'GET /', '', { body: reqBody, example: resBody });
+  readRecordForm();
+  const ok = await saveRecordToCatalog(req, (r) => isHTTPSaved(r) && requestKeyFrom(r) === key);
+  if (ok) closeRecordModal();
 }
 
 async function recordWS() {
   if (sending) return;
-  const url = currentURL();
-  if (!url) {
-    setRecordError('请先填写 URL');
+  if (!currentURL() || !profileNameFromURL(currentURL())) {
+    setRecordError('请先填写地址');
     return;
   }
   const outText = el.recOut?.value || '';
   const inText = el.recIn?.value || '';
-  if (!outText.trim() && !inText.trim()) {
-    setRecordError('请填写发送或返回数据');
+  if (!outText.trim()) {
+    setRecordError('请填写发送内容');
     return;
   }
-  setBusy(true);
-  setRecordError('');
-  try {
-    if (historyMode) await exitHistoryMode();
-    await activateCurrent();
-    await persistProfile();
-    const vars = currentVarMap();
-    const rec = await RecordWS(
-      resolvedOpts(),
-      expandVars(outText, vars),
-      expandVars(inText, vars),
-    );
-    readRecordForm();
-    closeRecordModal();
-    if (rec) {
-      setDetailHtml(renderWSRecord(rec));
-    }
-  } catch (e) {
-    setRecordError(String(e));
-  } finally {
-    setBusy(false);
-  }
+  if (el.payload) el.payload.value = outText;
+  if (el.payloadIn) el.payloadIn.value = inText;
+  lastSent = outText;
+  const key = wsMessageKey(outText);
+  const name = wsMessageStoreName(key, outText) || '新消息';
+  const req = snapshotWSMessage(name, '', { body: outText, example: inText });
+  readRecordForm();
+  const ok = await saveRecordToCatalog(req, (r) => isWSSaved(r) && key && wsMessageKey(r.body || '') === key);
+  if (ok) closeRecordModal();
 }
 
 /* —— history modal —— */
@@ -3661,7 +4411,7 @@ function renderHistoryItems(list, keyword) {
   el.histEmpty.classList.toggle('hidden', list.length > 0);
   el.histEmpty.textContent = kw
     ? `没有匹配 “${kw}” 的日志`
-    : '暂无日志，发送、记录或连接后会按日期和 IP/域名分开保存';
+    : '暂无日志，发送或连接后会按日期和 IP/域名分开保存';
 
   for (const s of list) {
     const item = document.createElement('div');
@@ -3737,6 +4487,9 @@ async function pickSession() {
 async function init() {
   initTheme();
   setCatalogOpen(catalogOpen());
+  workMode = readWorkMode();
+  applyWorkMode();
+  ensureCatalogTip();
   el.btnAddProfile?.addEventListener('click', () => openUrlModal());
   el.btnUrlModalClose?.addEventListener('click', closeUrlModal);
   el.btnUrlModalCancel?.addEventListener('click', closeUrlModal);
@@ -3773,12 +4526,11 @@ async function init() {
     suppressSessionReset = false;
   }
 
-  el.profile.addEventListener('change', async () => {
-    const nextName = el.profile.value;
-    clearTimeout(persistTimer);
-    await persistProfile(nextName);
-    const p = profiles.find((x) => x.name === nextName);
-    await applyProfile(p);
+  el.project?.addEventListener('change', async () => {
+    await selectProject(el.project.value);
+  });
+  el.barEnv?.addEventListener('change', async () => {
+    await selectEnvironment(el.barEnv.value);
   });
   el.btnDelProfile?.addEventListener('click', deleteCurrentProfile);
   document.addEventListener('mousedown', (e) => {
@@ -3788,8 +4540,15 @@ async function init() {
     if (groupMenuOpen() && !el.groupMenu?.contains(e.target) && !e.target?.closest?.('.catalog-more, .env-more')) {
       closeGroupMenu();
     }
+    if (envEditOpen() && !el.envWrap?.contains(e.target)) {
+      closeEnvEdit();
+    }
   });
 
+  el.modeSwitch?.addEventListener('click', (e) => {
+    const mode = e.target?.closest?.('.mode-btn')?.dataset?.mode;
+    if (mode) setWorkMode(mode);
+  });
   el.btnToggle.addEventListener('click', toggleConn);
   el.btnSend.addEventListener('click', sendMsg);
   el.btnSendTop?.addEventListener('click', sendMsg);
@@ -3802,6 +4561,17 @@ async function init() {
       schedulePersist();
     }
   });
+  el.btnCopyDetail?.addEventListener('click', () => copySelectedDetail());
+  el.btnCopyDocReq?.addEventListener('click', async () => {
+    const ok = await copyText(el.docReq?.value || '');
+    flashButton(el.btnCopyDocReq, ok ? '已复制' : '复制失败');
+  });
+  el.btnCopyDocRes?.addEventListener('click', async () => {
+    const ok = await copyText(el.docRes?.value || '');
+    flashButton(el.btnCopyDocRes, ok ? '已复制' : '复制失败');
+  });
+  el.docReq?.addEventListener('input', onDocReqInput);
+  el.docRes?.addEventListener('input', onDocResInput);
   el.btnCurl?.addEventListener('click', () => copyCurl(false));
   el.btnCurlDetail?.addEventListener('click', () => copyCurl(true));
   el.btnClearCookies?.addEventListener('click', async () => {
@@ -3900,6 +4670,10 @@ async function init() {
   el.payload.addEventListener('input', () => {
     schedulePersist();
   });
+  el.payloadIn?.addEventListener('input', () => {
+    recordDraft.in = el.payloadIn.value || '';
+    schedulePersist();
+  });
   el.payload.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
@@ -3989,7 +4763,6 @@ async function init() {
   el.moduleMenu?.addEventListener('mousedown', (e) => e.preventDefault());
   el.moduleMenu?.addEventListener('click', onModuleMenuClick);
   el.reqDesc?.addEventListener('input', onReqMetaInput);
-  el.envSelect?.addEventListener('change', onEnvSelectChange);
   el.btnEnvMore?.addEventListener('mousedown', (e) => e.preventDefault());
   el.btnEnvMore?.addEventListener('click', openEnvMenu);
   el.btnCatalogToggle?.addEventListener('click', () => setCatalogOpen(!catalogOpen()));
@@ -4005,14 +4778,22 @@ async function init() {
     }
   });
   el.catalogList?.addEventListener('click', onCatalogClick);
+  el.catalogList?.addEventListener('mouseover', onCatalogHover);
+  el.catalogList?.addEventListener('mouseleave', hideCatalogTip);
   el.catalogList?.addEventListener('dragstart', onCatalogDragStart);
   el.catalogList?.addEventListener('dragover', onCatalogDragOver);
   el.catalogList?.addEventListener('drop', onCatalogDrop);
   el.catalogList?.addEventListener('dragend', onCatalogDragEnd);
-  el.catalogList?.addEventListener('scroll', closeGroupMenu);
+  el.catalogList?.addEventListener('scroll', () => {
+    hideCatalogTip();
+    closeGroupMenu();
+  });
   el.groupMenu?.addEventListener('mousedown', (e) => e.preventDefault());
   el.groupMenu?.addEventListener('click', onGroupMenuClick);
-  window.addEventListener('resize', closeGroupMenu);
+  window.addEventListener('resize', () => {
+    hideCatalogTip();
+    closeGroupMenu();
+  });
 
   EventsOn('message', (m) => {
     if (historyMode) return;

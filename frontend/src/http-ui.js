@@ -1,5 +1,25 @@
+export const HOST_VAR_KEY = 'host';
+
 export function emptyRow() {
   return { key: '', value: '', enabled: true };
+}
+
+export function isHostVarKey(key) {
+  return String(key || '').trim().toLowerCase() === HOST_VAR_KEY;
+}
+
+export function ensureHostVarRows(rows, fallbackURL = '') {
+  const list = cloneRows(rows);
+  const found = list.find((r) => isHostVarKey(r.key));
+  const others = list.filter((r) => !isHostVarKey(r.key));
+  const host = {
+    key: HOST_VAR_KEY,
+    value: found ? found.value : String(fallbackURL || '').trim(),
+    enabled: true,
+  };
+  const out = [host, ...others];
+  if (!out.length || String(out[out.length - 1].key || '').trim()) out.push(emptyRow());
+  return out;
 }
 
 export function cloneRows(rows) {
@@ -317,38 +337,67 @@ export function parseHTTPOutPreview(text) {
   return { method: m[1].toUpperCase(), url: m[2] };
 }
 
-function bindKVRow(root, rows, i, onChange) {
+function bindKVRow(root, rows, i, onChange, opts) {
   const row = rows[i] || emptyRow();
+  const locked = Boolean(opts?.lockHost && isHostVarKey(row.key));
   const line = document.createElement('div');
-  line.className = 'kv-row';
+  line.className = 'kv-row' + (locked ? ' kv-locked' : '');
   line.innerHTML = `
-    <input type="checkbox" class="kv-on" ${row.enabled ? 'checked' : ''} title="启用"/>
-    <input class="input kv-key" spellcheck="false" placeholder="Key"/>
-    <input class="input kv-val" spellcheck="false" placeholder="Value"/>
-    <button type="button" class="btn ghost kv-del" title="删除">×</button>
+    <input type="checkbox" class="kv-on" ${row.enabled || locked ? 'checked' : ''} title="${locked ? 'host 始终启用' : '启用'}" ${locked ? 'disabled' : ''}/>
+    <input class="input kv-key" spellcheck="false" placeholder="Key" ${locked ? 'readonly tabindex="-1"' : ''}/>
+    <input class="input kv-val" spellcheck="false" placeholder="${locked ? 'ws://host:port/path' : 'Value'}"/>
+    ${locked ? '<span class="kv-del-slot" aria-hidden="true"></span>' : '<button type="button" class="btn ghost kv-del" title="删除">×</button>'}
   `;
   const keyInput = line.querySelector('.kv-key');
   const valInput = line.querySelector('.kv-val');
-  keyInput.value = row.key;
+  keyInput.value = locked ? HOST_VAR_KEY : row.key;
   valInput.value = row.value;
-  line.querySelector('.kv-on').addEventListener('change', (e) => {
-    rows[i].enabled = e.target.checked;
-    onChange?.();
-  });
+  if (locked) {
+    rows[i].key = HOST_VAR_KEY;
+    rows[i].enabled = true;
+    keyInput.title = 'host 固定，不能改名或删除';
+  }
+  const onBox = line.querySelector('.kv-on');
+  if (onBox && !locked) {
+    onBox.addEventListener('change', (e) => {
+      rows[i].enabled = e.target.checked;
+      onChange?.();
+    });
+  }
   const onKeyEdit = (e) => {
+    if (locked) {
+      keyInput.value = HOST_VAR_KEY;
+      return;
+    }
+    if (opts?.lockHost && isHostVarKey(keyInput.value)) {
+      keyInput.value = '';
+      rows[i].key = '';
+      onChange?.();
+      return;
+    }
     rows[i].key = keyInput.value;
     if (!e.isComposing && i === rows.length - 1 && keyInput.value) {
       rows.push(emptyRow());
-      bindKVRow(root, rows, rows.length - 1, onChange);
+      bindKVRow(root, rows, rows.length - 1, onChange, opts);
     }
     onChange?.();
   };
   keyInput.addEventListener('input', onKeyEdit);
   keyInput.addEventListener('compositionend', () => {
+    if (locked) {
+      keyInput.value = HOST_VAR_KEY;
+      return;
+    }
+    if (opts?.lockHost && isHostVarKey(keyInput.value)) {
+      keyInput.value = '';
+      rows[i].key = '';
+      onChange?.();
+      return;
+    }
     rows[i].key = keyInput.value;
     if (i === rows.length - 1 && keyInput.value) {
       rows.push(emptyRow());
-      bindKVRow(root, rows, rows.length - 1, onChange);
+      bindKVRow(root, rows, rows.length - 1, onChange, opts);
     }
     onChange?.();
   });
@@ -356,20 +405,25 @@ function bindKVRow(root, rows, i, onChange) {
     rows[i].value = valInput.value;
     onChange?.();
   });
-  line.querySelector('.kv-del').addEventListener('click', () => {
+  line.querySelector('.kv-del')?.addEventListener('click', () => {
+    if (locked || isHostVarKey(rows[i]?.key)) return;
     if (rows.length === 1) {
       rows[0] = emptyRow();
     } else {
       rows.splice(i, 1);
     }
-    renderKV(root, rows, onChange);
+    if (opts?.lockHost) {
+      const next = ensureHostVarRows(rows);
+      rows.splice(0, rows.length, ...next);
+    }
+    renderKV(root, rows, onChange, opts);
     onChange?.();
   });
   root.appendChild(line);
 }
 
-export function renderKV(root, rows, onChange) {
+export function renderKV(root, rows, onChange, opts) {
   if (!root) return;
   root.innerHTML = '';
-  rows.forEach((_, i) => bindKVRow(root, rows, i, onChange));
+  rows.forEach((_, i) => bindKVRow(root, rows, i, onChange, opts));
 }

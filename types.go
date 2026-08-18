@@ -15,8 +15,10 @@ type Environment struct {
 
 // Profile is a named connection preset (one per scheme://host[:port]).
 type Profile struct {
-	Name         string            `json:"name"`
-	URL          string            `json:"url"`
+	Name string `json:"name"`
+	URL  string `json:"url"`
+	// Project groups hosts that share one catalog (ApiZza / Postman collection name).
+	Project      string            `json:"project,omitempty"`
 	Protocol     string            `json:"protocol"`
 	Method       string            `json:"method,omitempty"`
 	Headers      map[string]string `json:"headers"`
@@ -63,6 +65,8 @@ type SavedRequest struct {
 	BodyType    string       `json:"bodyType,omitempty"`
 	Body        string       `json:"body,omitempty"`
 	FormList    []HeaderItem `json:"formList,omitempty"`
+	// Example is a recorded response / return body, not sent.
+	Example string `json:"example,omitempty"`
 }
 
 // ConnectOptions is used by the UI to open a connection.

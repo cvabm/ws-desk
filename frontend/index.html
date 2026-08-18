@@ -7,10 +7,22 @@
   <link rel="icon" href="./src/assets/images/appicon.svg" type="image/svg+xml"/>
 </head>
 <body>
-  <div id="app" class="app">
+  <div id="app" class="app doc-mode">
     <!-- top bar -->
     <header class="bar">
-      <select id="profile" class="select profile" title="按协议 + IP / 域名 + 端口"></select>
+      <select id="project" class="select project" title="项目"></select>
+      <div id="envWrap" class="env-wrap">
+        <select id="barEnv" class="select bar-env" title="环境"></select>
+        <button id="btnEnvMore" class="btn ghost bar-btn btn-icon env-more" type="button" title="环境菜单" aria-label="环境菜单" aria-haspopup="menu" aria-expanded="false">⋯</button>
+        <div id="envEdit" class="env-edit hidden">
+          <div class="env-edit-head">
+            <span>变量</span>
+            <span id="envEditName" class="env-edit-name"></span>
+          </div>
+          <div class="vars-hint">host 固定，对应顶部地址。其它名字写 Token，在 URL / 头 / 体里用 {{Token}}</div>
+          <div id="varRows" class="kv-list"></div>
+        </div>
+      </div>
       <button id="btnAddProfile" class="btn ghost bar-btn btn-icon btn-add-profile" type="button" title="增加地址" aria-label="增加地址">
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.75v10.5M2.75 8h10.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
       </button>
@@ -38,11 +50,16 @@
       <label id="redirectWrap" class="check hidden"><input id="followRedirects" type="checkbox" checked/> 重定向</label>
       <button id="btnToggle" class="btn primary" type="button">连接</button>
       <button id="btnSendTop" class="btn primary hidden" type="button">发送</button>
-      <button id="btnRecord" class="btn ghost" type="button" title="打开手动记录，不发送">记录</button>
+      <button id="btnRecord" class="btn ghost" type="button" title="保存到左侧接口，不发送">记录</button>
       <div id="state" class="state idle">idle</div>
+      <div id="modeSwitch" class="mode-switch" role="tablist" aria-label="工作模式">
+        <button id="btnModeDoc" class="mode-btn on" type="button" data-mode="doc" role="tab" aria-selected="true">文档</button>
+        <button id="btnModeDebug" class="mode-btn" type="button" data-mode="debug" role="tab" aria-selected="false">调试</button>
+      </div>
       <button id="btnHistory" class="btn ghost bar-btn" type="button" title="历史会话">历史</button>
       <button id="btnTheme" class="btn ghost bar-btn" type="button" title="切换主题">深色</button>
     </header>
+    <div id="catalogTip" class="catalog-tip" hidden></div>
 
     <!-- history banner -->
     <div id="histBanner" class="hist-banner hidden">
@@ -73,6 +90,37 @@
         </div>
         <div id="catalogList" class="catalog-list"></div>
       </aside>
+      <section id="docPane" class="doc-pane">
+        <div class="pane-head">
+          <span id="docHeadTitle">接口详情</span>
+        </div>
+        <div id="docEmpty" class="doc-empty">从左侧选择一个接口，查看并编辑说明、请求和返回示例。</div>
+        <div id="docBody" class="doc-body hidden">
+          <div id="docMeta" class="doc-meta"></div>
+          <div id="docSummary" class="doc-summary"></div>
+          <div id="docExtra" class="doc-extra"></div>
+          <div class="doc-cols">
+            <div class="doc-col">
+              <div class="doc-col-head">
+                <span>请求</span>
+                <div class="pane-actions">
+                  <button id="btnCopyDocReq" class="btn ghost" type="button" title="复制请求">复制</button>
+                </div>
+              </div>
+              <textarea id="docReq" class="doc-block doc-edit" spellcheck="false" placeholder="请求体，可直接改"></textarea>
+            </div>
+            <div class="doc-col">
+              <div class="doc-col-head">
+                <span>返回示例</span>
+                <div class="pane-actions">
+                  <button id="btnCopyDocRes" class="btn ghost" type="button" title="复制返回示例">复制</button>
+                </div>
+              </div>
+              <textarea id="docRes" class="doc-block doc-edit" spellcheck="false" placeholder="返回示例，可直接改"></textarea>
+            </div>
+          </div>
+        </div>
+      </section>
       <section class="list-pane">
         <div id="reqPane" class="req-pane hidden">
           <div class="pane-head">
@@ -98,21 +146,12 @@
               </div>
               <input id="reqDesc" class="input req-meta-desc" type="text" spellcheck="false" maxlength="200"
                      placeholder="描述（可选）"/>
-              <div id="envBar" class="env-bar">
-                <span class="env-label">环境</span>
-                <select id="envSelect" class="select env-select" title="切换变量环境"></select>
-                <button id="btnEnvMore" class="btn ghost bar-btn btn-icon env-more" type="button" title="环境菜单" aria-label="环境菜单" aria-haspopup="menu" aria-expanded="false">⋯</button>
-              </div>
-              <div id="envVars" class="env-vars hidden">
-                <div class="vars-hint">当前环境的变量。名字写 Token，发送时替换 {{Token}}</div>
-              </div>
             </div>
             <div id="reqTabs" class="req-tabs">
               <button type="button" class="req-tab" data-tab="params">参数</button>
               <button type="button" class="req-tab" data-tab="headers">请求头</button>
               <button type="button" class="req-tab" data-tab="auth">鉴权</button>
               <button type="button" class="req-tab on" data-tab="body">请求体</button>
-              <button type="button" class="req-tab" data-tab="vars">变量</button>
             </div>
             <div id="tabParams" class="req-panel hidden">
               <div id="paramRows" class="kv-list"></div>
@@ -141,10 +180,6 @@
               </div>
               <div id="formRows" class="kv-list hidden"></div>
             </div>
-            <div id="tabVars" class="req-panel hidden">
-              <div class="vars-hint">当前环境的变量。名字写 Token，在 URL / 头 / 体里用 {{Token}}，发送时替换</div>
-              <div id="varRows" class="kv-list"></div>
-            </div>
           </div>
         </div>
         <div class="pane-head">
@@ -161,7 +196,8 @@
           <span id="detailTitle">详情</span>
           <div class="pane-actions">
             <button id="btnCurlDetail" class="btn ghost hidden" type="button" title="复制为 cURL">cURL</button>
-            <button id="btnFill" class="btn ghost hidden" type="button" title="把这条记录填回请求栏">填回</button>
+            <button id="btnCopyDetail" class="btn ghost hidden" type="button" title="复制这条详情">复制</button>
+            <button id="btnFill" class="btn ghost hidden" type="button" title="把这条发送填回请求栏">填回</button>
           </div>
         </div>
         <div id="detail" class="detail empty">选择一条消息</div>
@@ -171,7 +207,14 @@
     <!-- composer -->
     <footer class="composer">
       <div id="payloadWrap" class="payload-wrap">
-        <textarea id="payload" class="payload" spellcheck="false" placeholder='{"cmd":"ping"}  ·  Ctrl+Enter 发送'></textarea>
+        <div id="payloadOutCol" class="payload-col">
+          <div class="payload-col-head">发送</div>
+          <textarea id="payload" class="payload" rows="12" spellcheck="false" placeholder='{"cmd":"ping"}  ·  Ctrl+Enter 发送'></textarea>
+        </div>
+        <div id="payloadInCol" class="payload-col">
+          <div class="payload-col-head">返回</div>
+          <textarea id="payloadIn" class="payload payload-in" rows="12" spellcheck="false" placeholder="这条接口记录的返回信令"></textarea>
+        </div>
       </div>
       <div class="composer-actions">
         <button id="btnSaveWS" class="btn ghost" type="button" title="保存当前发送，不发送（Ctrl+S）">保存</button>
@@ -258,7 +301,7 @@
                placeholder="关键字搜索：日期 / IP / 域名 / URL / 消息…"/>
       </div>
       <div id="histList" class="hist-list"></div>
-      <div id="histEmpty" class="hist-empty hidden">暂无按天日志（ws-YYYY-MM-DD.jsonl），发送、记录或连接后会自动生成</div>
+      <div id="histEmpty" class="hist-empty hidden">暂无按天日志（ws-YYYY-MM-DD.jsonl），发送或连接后会自动生成</div>
     </div>
   </div>
 
@@ -271,7 +314,7 @@
           <button id="btnRecordClose" class="btn ghost" type="button">关闭</button>
         </div>
       </div>
-      <div id="recordHint" class="record-hint">不会发送，只保存到记录列表和当天日志。</div>
+      <div id="recordHint" class="record-hint">不会发送，保存到左侧接口。</div>
       <div id="recordMeta" class="record-meta"></div>
       <div id="recordWS" class="record-body record-ws">
         <div class="record-col">
@@ -308,7 +351,7 @@
       <div class="record-foot">
         <div id="recordErr" class="record-err"></div>
         <button id="btnRecordCancel" class="btn ghost" type="button">取消</button>
-        <button id="btnRecordSave" class="btn primary" type="button">保存记录</button>
+        <button id="btnRecordSave" class="btn primary" type="button">保存到接口</button>
       </div>
     </div>
   </div>

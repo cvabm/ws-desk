@@ -50,6 +50,9 @@ func parseImportFile(raw []byte) (Profile, error) {
 	if isPostmanCollection(raw) {
 		return parsePostmanCollection(raw)
 	}
+	if isApizzaProject(raw) {
+		return parseApizzaProject(raw)
+	}
 	return parseCatalogFile(raw)
 }
 
@@ -124,7 +127,7 @@ func mergeVariables(dst, src []HeaderItem) []HeaderItem {
 }
 
 func mergeImportedCatalog(dst, src Profile) Profile {
-	dst.Requests = mergeImportedRequests(dst.Requests, src.Requests)
+	dst.Requests = mergeDedupedRequests(dst.Requests, src.Requests)
 	mods := append([]string{}, dst.Modules...)
 	mods = append(mods, src.Modules...)
 	for _, r := range src.Requests {
@@ -133,28 +136,42 @@ func mergeImportedCatalog(dst, src Profile) Profile {
 		}
 	}
 	dst.Modules = normalizeModules(mods)
-	srcEnvs, _ := normalizeEnvironments(src.Environments, src.ActiveEnv, src.VariableList)
-	dstEnvs, active := normalizeEnvironments(dst.Environments, dst.ActiveEnv, dst.VariableList)
-	dst.Environments = mergeEnvironments(dstEnvs, srcEnvs)
-	dst.ActiveEnv = active
+	if strings.TrimSpace(dst.Project) == "" {
+		dst.Project = clipRunes(src.Project, 80)
+	}
+	srcEnvs, srcActive := normalizeEnvironments(src.Environments, src.ActiveEnv, src.VariableList)
+	if len(dst.Environments) == 0 && strings.TrimSpace(dst.ActiveEnv) == "" && len(normalizeVarRows(dst.VariableList)) == 0 {
+		dst.Environments = srcEnvs
+		dst.ActiveEnv = srcActive
+	} else {
+		dstEnvs, active := normalizeEnvironments(dst.Environments, dst.ActiveEnv, dst.VariableList)
+		dst.Environments = mergeEnvironments(dstEnvs, srcEnvs)
+		dst.ActiveEnv = active
+	}
 	dst.VariableList = activeEnvVars(dst.Environments, dst.ActiveEnv)
 	return dst
 }
 
 func importVarMap(p Profile) map[string]string {
 	out := map[string]string{}
-	for _, row := range p.VariableList {
-		if k := strings.TrimSpace(row.Key); k != "" {
-			out[k] = row.Value
-		}
-	}
-	for _, e := range p.Environments {
-		for _, row := range e.Variables {
+	add := func(rows []HeaderItem) {
+		for _, row := range rows {
 			if k := strings.TrimSpace(row.Key); k != "" {
 				out[k] = row.Value
 			}
 		}
 	}
+	add(p.VariableList)
+	active := strings.TrimSpace(p.ActiveEnv)
+	var activeRows []HeaderItem
+	for _, e := range p.Environments {
+		if active != "" && strings.TrimSpace(e.Name) == active {
+			activeRows = e.Variables
+			continue
+		}
+		add(e.Variables)
+	}
+	add(activeRows)
 	return out
 }
 
@@ -226,13 +243,249 @@ func requestURLOnHost(resolved, host string) string {
 	return host + path + suffix
 }
 
+func envHostPairs(src Profile) [][2]string {
+	seen := map[string]struct{}{}
+	out := make([][2]string, 0, len(src.Environments))
+	add := func(full string) {
+		full = strings.TrimSpace(full)
+		host := importHostFromURL(full)
+		if host == "" {
+			return
+		}
+		if _, ok := seen[host]; ok {
+			return
+		}
+		seen[host] = struct{}{}
+		out = append(out, [2]string{host, full})
+	}
+	add(src.URL)
+	for _, e := range src.Environments {
+		add(apizzaHostFromVars(e.Variables))
+	}
+	add(hostFromBaseVars(importVarMap(src)))
+	return out
+}
+
+func rewriteRequestsOntoHost(list []SavedRequest, host, full string) []SavedRequest {
+	if len(list) == 0 {
+		return nil
+	}
+	out := make([]SavedRequest, 0, len(list))
+	for _, r := range list {
+		r = normalizeSavedRequest(r)
+		r.ID = ""
+		resolved := strings.TrimSpace(full)
+		if resolved == "" {
+			resolved = host
+		}
+		if orig := strings.TrimSpace(r.URL); importHostFromURL(orig) != "" {
+			r.URL = requestURLOnHost(orig, host)
+		} else {
+			r.URL = requestURLOnHost(resolved, host)
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+func explicitProjectName(p Profile) string {
+	name := strings.TrimSpace(p.Project)
+	if name == "" || strings.Contains(name, "://") {
+		return ""
+	}
+	return name
+}
+
+func projectImportProfile(src Profile, fallback string) (Profile, error) {
+	u := strings.TrimSpace(src.URL)
+	name := importHostFromURL(u)
+	if name == "" {
+		for _, pair := range envHostPairs(src) {
+			if pair[0] == "" {
+				continue
+			}
+			name = pair[0]
+			if strings.TrimSpace(pair[1]) != "" {
+				u = pair[1]
+			} else {
+				u = pair[0]
+			}
+			break
+		}
+	}
+	if name == "" {
+		name = fallback
+	}
+	if name == "" {
+		return Profile{}, fmt.Errorf("无法从文件判断主机（需要完整 URL 或 baseUrl）")
+	}
+	if importHostFromURL(u) == "" {
+		u = name
+	}
+	reqs := make([]SavedRequest, 0, len(src.Requests))
+	vars := importVarMap(src)
+	for _, r := range src.Requests {
+		r = normalizeSavedRequest(r)
+		resolved := substituteImportVars(r.URL, vars)
+		if importHostFromURL(r.URL) == "" && name != "" {
+			r.URL = requestURLOnHost(resolved, name)
+		}
+		reqs = append(reqs, r)
+	}
+	return Profile{
+		Name:         name,
+		URL:          u,
+		Project:      src.Project,
+		Requests:     reqs,
+		Modules:      src.Modules,
+		Environments: src.Environments,
+		VariableList: src.VariableList,
+		ActiveEnv:    src.ActiveEnv,
+	}, nil
+}
+
+func savedRequestKind(r SavedRequest) string {
+	if r.Kind == "http" || r.Kind == "ws" {
+		return r.Kind
+	}
+	switch urlSchemeOf(r.URL) {
+	case "http", "https":
+		return "http"
+	default:
+		return "ws"
+	}
+}
+
+func requestDedupeKey(r SavedRequest) string {
+	r = normalizeSavedRequest(r)
+	title := r.Title
+	if title == "" {
+		title = r.Name
+	}
+	extra := r.Name
+	if savedRequestKind(r) == "http" {
+		extra = strings.ToUpper(strings.TrimSpace(r.Method)) + " " + pathFromRequestURL(r.URL)
+	}
+	return strings.ToLower(r.Module + "\t" + title + "\t" + extra)
+}
+
+func requestRicher(a, b SavedRequest) bool {
+	as := len(strings.TrimSpace(a.Example)) + len(strings.TrimSpace(a.Body)) + len(strings.TrimSpace(a.Description))
+	bs := len(strings.TrimSpace(b.Example)) + len(strings.TrimSpace(b.Body)) + len(strings.TrimSpace(b.Description))
+	return as > bs
+}
+
+func mergeDedupedRequests(dst, src []SavedRequest) []SavedRequest {
+	byID := make(map[string]int, len(dst)+len(src))
+	seen := make(map[string]int, len(dst)+len(src))
+	out := make([]SavedRequest, 0, len(dst)+len(src))
+	add := func(r SavedRequest) {
+		r = normalizeSavedRequest(r)
+		if r.ID != "" {
+			if i, ok := byID[r.ID]; ok {
+				out[i] = r
+				return
+			}
+		}
+		key := requestDedupeKey(r)
+		if i, ok := seen[key]; ok {
+			if requestRicher(r, out[i]) {
+				r.ID = out[i].ID
+				out[i] = r
+			}
+			return
+		}
+		if r.ID == "" {
+			r.ID = newRequestID()
+		}
+		byID[r.ID] = len(out)
+		seen[key] = len(out)
+		out = append(out, r)
+	}
+	for _, r := range dst {
+		add(r)
+	}
+	for _, r := range src {
+		add(r)
+	}
+	return out
+}
+
+func mergeProjectCatalogs(dst, src Profile) Profile {
+	dst.Requests = mergeDedupedRequests(dst.Requests, src.Requests)
+	mods := append([]string{}, dst.Modules...)
+	mods = append(mods, src.Modules...)
+	dst.Modules = normalizeModules(mods)
+	dstEnvs, active := normalizeEnvironments(dst.Environments, dst.ActiveEnv, dst.VariableList)
+	srcEnvs, _ := normalizeEnvironments(src.Environments, src.ActiveEnv, src.VariableList)
+	dst.Environments = mergeEnvironments(dstEnvs, srcEnvs)
+	dst.ActiveEnv = active
+	dst.VariableList = activeEnvVars(dst.Environments, dst.ActiveEnv)
+	if strings.TrimSpace(dst.Project) == "" {
+		dst.Project = src.Project
+	}
+	return dst
+}
+
+func (a *App) compactProjectCatalogs() error {
+	list, err := a.loadProfiles()
+	if err != nil {
+		return err
+	}
+	groups := map[string][]Profile{}
+	order := make([]string, 0)
+	for _, p := range list {
+		proj := explicitProjectName(p)
+		if proj == "" {
+			continue
+		}
+		if _, ok := groups[proj]; !ok {
+			order = append(order, proj)
+		}
+		groups[proj] = append(groups[proj], p)
+	}
+	for _, proj := range order {
+		members := groups[proj]
+		if len(members) < 2 {
+			continue
+		}
+		keep := pickPrimaryImport(members)
+		for _, p := range members {
+			if p.Name == keep.Name {
+				continue
+			}
+			keep = mergeProjectCatalogs(keep, p)
+		}
+		if err := a.saveProfileFile(keep); err != nil {
+			return err
+		}
+		for _, p := range members {
+			if p.Name == keep.Name {
+				continue
+			}
+			if err := a.deleteProfile(p.Name); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func splitImportByHost(src Profile) ([]Profile, error) {
 	vars := importVarMap(src)
 	fallback := fileHostFromProfile(src)
 	if fallback == "" {
 		fallback = hostFromBaseVars(vars)
 	}
+	if strings.TrimSpace(src.Project) != "" {
+		p, err := projectImportProfile(src, fallback)
+		if err != nil {
+			return nil, err
+		}
+		return []Profile{p}, nil
+	}
 	groups := map[string][]SavedRequest{}
+	hostURL := map[string]string{}
 	order := make([]string, 0, 4)
 	add := func(host string, r SavedRequest) {
 		if _, ok := groups[host]; !ok {
@@ -253,6 +506,9 @@ func splitImportByHost(src Profile) ([]Profile, error) {
 		if importHostFromURL(r.URL) == "" {
 			r.URL = requestURLOnHost(resolved, host)
 		}
+		if _, ok := hostURL[host]; !ok && importHostFromURL(resolved) == host {
+			hostURL[host] = resolved
+		}
 		add(host, r)
 	}
 	if len(order) == 0 {
@@ -264,14 +520,30 @@ func splitImportByHost(src Profile) ([]Profile, error) {
 	}
 	out := make([]Profile, 0, len(order))
 	for _, host := range order {
+		u := host
+		if full := strings.TrimSpace(hostURL[host]); importHostFromURL(full) == host {
+			u = full
+		} else if full := strings.TrimSpace(src.URL); importHostFromURL(full) == host {
+			u = full
+		}
+		active := src.ActiveEnv
+		varsList := src.VariableList
+		for _, e := range src.Environments {
+			if importHostFromURL(apizzaHostFromVars(e.Variables)) == host {
+				active = e.Name
+				varsList = e.Variables
+				break
+			}
+		}
 		out = append(out, Profile{
 			Name:         host,
-			URL:          host,
+			URL:          u,
+			Project:      src.Project,
 			Requests:     groups[host],
 			Modules:      src.Modules,
 			Environments: src.Environments,
-			VariableList: src.VariableList,
-			ActiveEnv:    src.ActiveEnv,
+			VariableList: varsList,
+			ActiveEnv:    active,
 		})
 	}
 	return out, nil
@@ -290,7 +562,7 @@ func pickPrimaryImport(list []Profile) Profile {
 	return list[best]
 }
 
-func (a *App) loadOrCreateProfile(name string) (Profile, error) {
+func (a *App) loadOrCreateProfile(name, url, project string) (Profile, error) {
 	dst, err := a.loadProfileByName(name)
 	if err == nil {
 		return dst, nil
@@ -298,7 +570,10 @@ func (a *App) loadOrCreateProfile(name string) (Profile, error) {
 	if !os.IsNotExist(err) {
 		return Profile{}, err
 	}
-	return Profile{Name: name, URL: name, Headers: map[string]string{}}, nil
+	if strings.TrimSpace(url) == "" {
+		url = name
+	}
+	return Profile{Name: name, URL: url, Project: clipRunes(project, 80), Headers: map[string]string{}}, nil
 }
 
 func (a *App) exportCatalog(p Profile) (bool, error) {
@@ -341,9 +616,9 @@ func (a *App) importCatalog() (*Profile, error) {
 		return nil, fmt.Errorf("app not ready")
 	}
 	path, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "导入接口目录或 Postman Collection",
+		Title: "导入接口目录、Postman 或 ApiZza",
 		Filters: []runtime.FileFilter{
-			{DisplayName: "JSON", Pattern: "*.json"},
+			{DisplayName: "JSON / ApiZza / Postman", Pattern: "*.json"},
 			{DisplayName: "All Files", Pattern: "*.*"},
 		},
 	})
@@ -372,7 +647,7 @@ func (a *App) applyImportedFile(raw []byte) (*Profile, error) {
 	focus := pickPrimaryImport(buckets).Name
 	var primary Profile
 	for _, srcHost := range buckets {
-		dst, err := a.loadOrCreateProfile(srcHost.Name)
+		dst, err := a.loadOrCreateProfile(srcHost.Name, srcHost.URL, srcHost.Project)
 		if err != nil {
 			return nil, err
 		}
@@ -382,6 +657,23 @@ func (a *App) applyImportedFile(raw []byte) (*Profile, error) {
 		}
 		if srcHost.Name == focus {
 			primary = merged
+		}
+	}
+	if err := a.compactProjectCatalogs(); err != nil {
+		return nil, err
+	}
+	if proj := explicitProjectName(primary); proj != "" {
+		if list, err := a.loadProfiles(); err == nil {
+			for _, p := range list {
+				if explicitProjectName(p) == proj {
+					primary = p
+					break
+				}
+			}
+		}
+	} else if primary.Name != "" {
+		if got, err := a.loadProfileByName(primary.Name); err == nil {
+			primary = got
 		}
 	}
 	return &primary, nil

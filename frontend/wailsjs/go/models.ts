@@ -196,6 +196,7 @@ export namespace main {
 	    bodyType?: string;
 	    body?: string;
 	    formList?: HeaderItem[];
+	    example?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new SavedRequest(source);
@@ -221,6 +222,7 @@ export namespace main {
 	        this.bodyType = source["bodyType"];
 	        this.body = source["body"];
 	        this.formList = this.convertValues(source["formList"], HeaderItem);
+	        this.example = source["example"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -244,6 +246,7 @@ export namespace main {
 	export class Profile {
 	    name: string;
 	    url: string;
+	    project?: string;
 	    protocol: string;
 	    method?: string;
 	    headers: Record<string, string>;
@@ -272,6 +275,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
 	        this.url = source["url"];
+	        this.project = source["project"];
 	        this.protocol = source["protocol"];
 	        this.method = source["method"];
 	        this.headers = source["headers"];
