@@ -15,6 +15,7 @@ import {
   DeleteProfile,
   DeleteRequest,
   ExportCatalog,
+  ExportAllCatalogs,
   ImportCatalog,
   ListSessions,
   SearchSessions,
@@ -55,6 +56,8 @@ const THEME_KEY = 'ws-desk-theme';
 const CATALOG_KEY = 'ws-desk-catalog';
 const SEL_KEY = 'ws-desk-sel';
 const MODE_KEY = 'ws-desk-work-mode';
+const HOVER_KEY = 'ws-desk-catalog-hover';
+const DOC_EDIT_KEY = 'ws-desk-doc-edit';
 const DEFAULT_ENV = '默认';
 
 const HTTP_SCHEMES = new Set(['http', 'https']);
@@ -98,13 +101,14 @@ const el = {
   modeSwitch: $('modeSwitch'),
   btnModeDoc: $('btnModeDoc'),
   btnModeDebug: $('btnModeDebug'),
+  btnDocEdit: $('btnDocEdit'),
   docPane: $('docPane'),
-  docHeadTitle: $('docHeadTitle'),
   docEmpty: $('docEmpty'),
   docBody: $('docBody'),
   docMeta: $('docMeta'),
-  docSummary: $('docSummary'),
   docExtra: $('docExtra'),
+  docReqView: $('docReqView'),
+  docResView: $('docResView'),
   docReq: $('docReq'),
   docRes: $('docRes'),
   btnCopyDocReq: $('btnCopyDocReq'),
@@ -174,6 +178,11 @@ const el = {
   btnClear: $('btnClear'),
   footer: $('footer'),
   btnTheme: $('btnTheme'),
+  btnSettings: $('btnSettings'),
+  settingsModal: $('settingsModal'),
+  settingsNav: $('settingsNav'),
+  settingsMain: $('settingsMain'),
+  btnSettingsClose: $('btnSettingsClose'),
   btnHistory: $('btnHistory'),
   histBanner: $('histBanner'),
   histLabel: $('histLabel'),
@@ -307,6 +316,57 @@ function initTheme() {
 function toggleTheme() {
   const cur = document.documentElement.getAttribute('data-theme') || 'light';
   applyTheme(cur === 'dark' ? 'light' : 'dark');
+}
+
+function catalogHoverMode() {
+  return localStorage.getItem(HOVER_KEY) === 'detail' ? 'detail' : 'title';
+}
+
+function setCatalogHoverMode(mode) {
+  const next = mode === 'title' ? 'title' : 'detail';
+  localStorage.setItem(HOVER_KEY, next);
+  syncCatalogHoverRadios();
+  hideCatalogTip();
+}
+
+function syncCatalogHoverRadios() {
+  const mode = catalogHoverMode();
+  for (const input of document.querySelectorAll('input[name="catalogHover"]')) {
+    input.checked = input.value === mode;
+  }
+}
+
+function settingsOpen() {
+  return Boolean(el.settingsModal && !el.settingsModal.classList.contains('hidden'));
+}
+
+function showSettingsSection(name) {
+  const id = name || 'catalog';
+  for (const btn of el.settingsNav?.querySelectorAll('.settings-nav-item') || []) {
+    btn.classList.toggle('on', btn.dataset.section === id);
+  }
+  for (const sec of el.settingsMain?.querySelectorAll('.settings-section') || []) {
+    sec.classList.toggle('hidden', sec.dataset.section !== id);
+  }
+}
+
+function closeSettings() {
+  el.settingsModal?.classList.add('hidden');
+  el.settingsModal?.setAttribute('aria-hidden', 'true');
+}
+
+function openSettings() {
+  closeEnvEdit();
+  closeGroupMenu();
+  syncCatalogHoverRadios();
+  showSettingsSection(el.settingsNav?.querySelector('.settings-nav-item.on')?.dataset.section || 'catalog');
+  el.settingsModal?.classList.remove('hidden');
+  el.settingsModal?.setAttribute('aria-hidden', 'false');
+}
+
+function toggleSettings() {
+  if (settingsOpen()) closeSettings();
+  else openSettings();
 }
 
 /* —— messages —— */
@@ -692,6 +752,60 @@ function isDocMode() {
   return workMode === 'doc' && !historyMode;
 }
 
+function docEditing() {
+  return localStorage.getItem(DOC_EDIT_KEY) === 'on';
+}
+
+function setDocEditing(on) {
+  const next = Boolean(on);
+  if (!next) {
+    flushDocEditors();
+    flushReqMeta();
+    if (activeSavedId) persistProfile();
+  }
+  localStorage.setItem(DOC_EDIT_KEY, next ? 'on' : 'off');
+  applyDocEditing();
+  if (next && isDocMode()) el.reqTitle?.focus();
+}
+
+function applyDocEditing() {
+  const editing = isDocMode() && docEditing();
+  const locked = isDocMode() && !docEditing();
+  el.app?.classList.toggle('doc-editing', editing);
+  if (el.btnDocEdit) {
+    el.btnDocEdit.setAttribute('aria-checked', editing ? 'true' : 'false');
+    el.btnDocEdit.title = editing ? '关闭后名称、描述、请求和返回示例不可改' : '打开后可改名称、描述、请求和返回示例';
+  }
+  const fields = [el.reqTitle, el.reqModule, el.reqDesc, el.docReq, el.docRes];
+  for (const node of fields) {
+    if (node) node.readOnly = locked;
+  }
+  if (el.reqTitle) el.reqTitle.placeholder = locked ? '' : '标题，例如 登录';
+  if (el.reqModule) el.reqModule.placeholder = locked ? '' : '模块';
+  if (el.reqDesc) el.reqDesc.placeholder = locked ? '' : '描述（可选）';
+  if (el.docReq) el.docReq.placeholder = locked ? '' : '请求体，可直接改';
+  if (el.docRes) el.docRes.placeholder = locked ? '' : '返回示例，可直接改';
+  el.docReqView?.classList.toggle('hidden', editing);
+  el.docResView?.classList.toggle('hidden', editing);
+  el.docReq?.classList.toggle('hidden', !editing);
+  el.docRes?.classList.toggle('hidden', !editing);
+  syncDocMetaEmpty();
+  if (locked) {
+    closeModuleMenu();
+    paintDocViews(currentSavedRequest());
+  }
+}
+
+function syncDocMetaEmpty() {
+  const hideEmpty = isDocMode() && !docEditing();
+  if (el.moduleWrap) {
+    el.moduleWrap.classList.toggle('is-empty', hideEmpty && !currentReqModule());
+  }
+  if (el.reqDesc) {
+    el.reqDesc.classList.toggle('is-empty', hideEmpty && !currentReqDesc());
+  }
+}
+
 function readWorkMode() {
   return localStorage.getItem(MODE_KEY) === 'debug' ? 'debug' : 'doc';
 }
@@ -732,9 +846,12 @@ function applyWorkMode() {
     el.reqPane?.classList.add('hidden');
     el.composer?.classList.add('hidden');
     placeReqMeta(http);
+    applyDocEditing();
     renderDocPane({ reloadEditors: true });
     return;
   }
+  el.app?.classList.remove('doc-editing');
+  applyDocEditing();
   el.docPane?.classList.add('hidden');
   el.reqPane?.classList.toggle('hidden', !http);
   el.composer?.classList.remove('hidden');
@@ -785,24 +902,13 @@ function renderDocPane({ reloadEditors = false } = {}) {
   if (!req) {
     el.docEmpty.classList.remove('hidden');
     el.docBody.classList.add('hidden');
-    if (el.docHeadTitle) el.docHeadTitle.textContent = '接口详情';
     fillDocEditors(null);
     return;
   }
   el.docEmpty.classList.add('hidden');
   el.docBody.classList.remove('hidden');
-  const title = requestDisplayTitle(req) || catalogItemLabel(req) || '未命名接口';
-  if (el.docHeadTitle) el.docHeadTitle.textContent = title;
+  syncDocMetaEmpty();
   const http = isHTTPSaved(req);
-  const method = http ? String(req.method || 'GET').toUpperCase() : 'WS';
-  const path = http ? (requestItemPath(req) || '/') : (wsCmdLabel(req) || requestDisplayTitle(req) || '信令');
-  const url = req.url || currentURL() || '';
-  if (el.docSummary) {
-    el.docSummary.innerHTML =
-      `<span class="saved-item-method ${http ? method.toLowerCase() : 'ws'}">${escapeHtml(method)}</span>` +
-      `<span class="doc-path">${escapeHtml(path)}</span>` +
-      (url ? `<span class="doc-url">${escapeHtml(url)}</span>` : '');
-  }
   if (el.docExtra) {
     if (http) {
       el.docExtra.innerHTML = [
@@ -830,9 +936,21 @@ function docRequestText(req) {
 }
 
 function fillDocEditors(req) {
-  if (el.docReq) el.docReq.value = req ? docRequestText(req) : '';
-  if (el.docRes) el.docRes.value = req ? (req.example || '') : '';
+  if (el.docReq) el.docReq.value = req ? prettyDocText(docRequestText(req)) : '';
+  if (el.docRes) el.docRes.value = req ? prettyDocText(req.example || '') : '';
+  paintDocViews(req);
   docEditorReqId = req?.id || '';
+}
+
+function paintDocViews(req) {
+  if (el.docReqView) {
+    const text = req ? prettyDocText(docRequestText(req)) : '';
+    el.docReqView.innerHTML = text ? renderDocCode(text) : '<div class="doc-muted">无</div>';
+  }
+  if (el.docResView) {
+    const text = req ? prettyDocText(req.example || '') : '';
+    el.docResView.innerHTML = text ? renderDocCode(text) : '<div class="doc-muted">无</div>';
+  }
 }
 
 function applyDocRequestText(req, text) {
@@ -874,6 +992,7 @@ function flushDocEditors() {
 }
 
 function onDocReqInput() {
+  if (isDocMode() && !docEditing()) return;
   const req = currentSavedRequest();
   if (!req) return;
   applyDocRequestText(req, el.docReq.value);
@@ -881,6 +1000,7 @@ function onDocReqInput() {
 }
 
 function onDocResInput() {
+  if (isDocMode() && !docEditing()) return;
   const req = currentSavedRequest();
   if (!req) return;
   applyDocExampleText(req, el.docRes.value);
@@ -2511,6 +2631,7 @@ function rematchSavedFromEditor() {
 }
 
 function onReqMetaInput() {
+  if (isDocMode() && !docEditing()) return;
   const req = currentSavedRequest();
   if (req) {
     req.title = currentReqTitle();
@@ -2680,6 +2801,7 @@ function renderModuleMenu() {
 
 function openModuleMenu() {
   if (!el.moduleMenu || historyMode) return;
+  if (isDocMode() && !docEditing()) return;
   if (confirmModalOpen() || urlModalOpen() || recordModalOpen() || promptModalOpen()) return;
   renderModuleMenu();
   el.moduleMenu.classList.remove('hidden');
@@ -2945,6 +3067,11 @@ function onGroupMenuClick(e) {
     else if (act === 'delete') deleteEnvironment();
     return;
   }
+  if (key === 'export') {
+    if (act === 'export-one') exportCatalog();
+    else if (act === 'export-all') exportAllCatalogs();
+    return;
+  }
   if (key.startsWith('item\t')) {
     const id = key.slice(5);
     if (act === 'duplicate') duplicateCatalogRequest(id);
@@ -3054,7 +3181,7 @@ function makeCatalogItem(r, kw, host) {
   line.appendChild(head);
   main.appendChild(line);
   item.appendChild(main);
-  catalogTipStore.set(item, catalogTipHTML(r, host));
+  catalogTipStore.set(item, { title: catalogItemLabel(r), html: catalogTipHTML(r, host) });
   if (!kw) {
     const more = document.createElement('button');
     more.type = 'button';
@@ -3140,12 +3267,33 @@ function hideCatalogTip() {
   const tip = el.catalogTip || document.getElementById('catalogTip');
   if (!tip) return;
   tip.hidden = true;
-  tip.classList.remove('is-on');
+  tip.classList.remove('is-on', 'title-only');
   tip.innerHTML = '';
 }
 
-function placeCatalogTip() {
+function catalogTitleOverflow(item) {
+  const title = item?.querySelector?.('.catalog-item-title');
+  if (!title) return false;
+  return title.scrollWidth - title.clientWidth > 1;
+}
+
+function placeCatalogTip(item) {
   const tip = ensureCatalogTip();
+  if (tip.classList.contains('title-only') && item) {
+    const r = item.getBoundingClientRect();
+    const pane = el.catalogPane?.getBoundingClientRect();
+    const left = Math.round((pane?.right || r.right) + 6);
+    tip.style.left = `${left}px`;
+    tip.style.top = `${Math.round(r.top)}px`;
+    tip.style.width = 'auto';
+    tip.style.maxWidth = `${Math.max(120, Math.min(420, window.innerWidth - left - 12))}px`;
+    tip.style.maxHeight = 'none';
+    const th = tip.offsetHeight || 0;
+    if (r.top + th > window.innerHeight - 8) {
+      tip.style.top = `${Math.max(8, window.innerHeight - th - 8)}px`;
+    }
+    return;
+  }
   const pane = el.catalogPane?.getBoundingClientRect();
   const bar = document.querySelector('.bar')?.getBoundingClientRect();
   const left = Math.round((pane?.right || 220) + 8);
@@ -3158,14 +3306,29 @@ function placeCatalogTip() {
 
 function fillCatalogTip(item) {
   if (!item || catalogDrag) return;
-  const html = catalogTipStore.get(item);
-  if (!html) return;
+  const rec = catalogTipStore.get(item);
+  const title = rec?.title || item.querySelector('.catalog-item-title')?.textContent || '';
+  const html = typeof rec === 'string' ? rec : rec?.html;
   const tip = ensureCatalogTip();
+  if (catalogHoverMode() === 'title') {
+    if (!catalogTitleOverflow(item) || !title) {
+      hideCatalogTip();
+      return;
+    }
+    catalogTipItem = item;
+    tip.innerHTML = `<div class="catalog-tip-title">${escapeHtml(title)}</div>`;
+    tip.classList.add('is-on', 'title-only');
+    tip.hidden = false;
+    placeCatalogTip(item);
+    return;
+  }
+  if (!html) return;
   catalogTipItem = item;
   tip.innerHTML = html;
-  tip.hidden = false;
+  tip.classList.remove('title-only');
   tip.classList.add('is-on');
-  placeCatalogTip();
+  tip.hidden = false;
+  placeCatalogTip(item);
 }
 
 function onCatalogHover(e) {
@@ -3503,7 +3666,8 @@ async function addCatalogRequest(moduleName) {
   setActiveSavedId(id);
   renderCatalog();
   await persistProfile();
-  el.reqTitle?.focus();
+  if (isDocMode() && !docEditing()) setDocEditing(true);
+  else el.reqTitle?.focus();
 }
 
 function cloneSavedRequest(src) {
@@ -3529,7 +3693,8 @@ async function duplicateCatalogRequest(id) {
   setActiveSavedId(copy.id);
   renderCatalog();
   await persistProfile();
-  el.reqTitle?.focus();
+  if (isDocMode() && !docEditing()) setDocEditing(true);
+  else el.reqTitle?.focus();
 }
 
 async function addCatalogModule() {
@@ -4056,6 +4221,13 @@ async function applyImportedCatalog(merged) {
   await applyProfile(p);
 }
 
+function openExportMenu(anchor) {
+  openCatalogMenu(anchor || el.btnCatalogExport, 'export', [
+    { act: 'export-one', label: '导出当前项目' },
+    { act: 'export-all', label: '导出全部' },
+  ]);
+}
+
 async function exportCatalog() {
   if (!requireURL()) return;
   await persistProfile();
@@ -4069,10 +4241,20 @@ async function exportCatalog() {
   }
 }
 
+async function exportAllCatalogs() {
+  if (currentProfile()) await persistProfile();
+  try {
+    const ok = await ExportAllCatalogs();
+    if (ok) flashCatalogTitle('已导出全部');
+  } catch (e) {
+    setDetailEmpty('导出失败: ' + e);
+  }
+}
+
 async function importCatalog() {
   const ok = await askConfirm({
     title: '导入接口',
-    message: '按文件里的主机写入，没有就会新建；多个主机会拆开。当前打开的地址不会被改，除非文件就是它。本机目录按 id 覆盖，Postman Collection / ApiZza 项目全部作为新接口追加。',
+    message: '按文件里的主机写入，没有就会新建；多个主机会拆开。当前打开的地址不会被改，除非文件就是它。本机目录或全部导出包按 id 覆盖，Postman Collection / ApiZza 项目全部作为新接口追加。',
     okText: '选择文件',
   });
   if (!ok) return;
@@ -4486,6 +4668,7 @@ async function pickSession() {
 
 async function init() {
   initTheme();
+  syncCatalogHoverRadios();
   setCatalogOpen(catalogOpen());
   workMode = readWorkMode();
   applyWorkMode();
@@ -4503,14 +4686,8 @@ async function init() {
   });
   el.btnConfirmCancel?.addEventListener('click', () => closeConfirmModal(false));
   el.btnConfirmOk?.addEventListener('click', () => closeConfirmModal(true));
-  el.confirmModal?.addEventListener('click', (e) => {
-    if (e.target === el.confirmModal) closeConfirmModal(false);
-  });
   el.btnPromptCancel?.addEventListener('click', () => closePromptModal(null));
   el.btnPromptOk?.addEventListener('click', submitPromptModal);
-  el.promptModal?.addEventListener('click', (e) => {
-    if (e.target === el.promptModal) closePromptModal(null);
-  });
   el.promptInput?.addEventListener('keydown', (e) => {
     if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter') {
@@ -4537,7 +4714,7 @@ async function init() {
     if (moduleMenuOpen() && !el.moduleWrap?.contains(e.target)) {
       closeModuleMenu();
     }
-    if (groupMenuOpen() && !el.groupMenu?.contains(e.target) && !e.target?.closest?.('.catalog-more, .env-more')) {
+    if (groupMenuOpen() && !el.groupMenu?.contains(e.target) && !e.target?.closest?.('.catalog-more, .env-more, #btnCatalogExport')) {
       closeGroupMenu();
     }
     if (envEditOpen() && !el.envWrap?.contains(e.target)) {
@@ -4572,6 +4749,7 @@ async function init() {
   });
   el.docReq?.addEventListener('input', onDocReqInput);
   el.docRes?.addEventListener('input', onDocResInput);
+  el.btnDocEdit?.addEventListener('click', () => setDocEditing(!docEditing()));
   el.btnCurl?.addEventListener('click', () => copyCurl(false));
   el.btnCurlDetail?.addEventListener('click', () => copyCurl(true));
   el.btnClearCookies?.addEventListener('click', async () => {
@@ -4621,6 +4799,16 @@ async function init() {
     refreshFilterTitle();
   });
   el.btnTheme.addEventListener('click', toggleTheme);
+  el.btnSettings?.addEventListener('click', openSettings);
+  el.btnSettingsClose?.addEventListener('click', closeSettings);
+  el.settingsNav?.addEventListener('click', (e) => {
+    const item = e.target?.closest?.('.settings-nav-item');
+    if (item?.dataset?.section) showSettingsSection(item.dataset.section);
+  });
+  el.settingsMain?.addEventListener('change', (e) => {
+    const input = e.target?.closest?.('input[name="catalogHover"]');
+    if (input) setCatalogHoverMode(input.value);
+  });
   // JSON tree node expand/collapse
   el.detail?.addEventListener('click', (e) => {
     if (toggleJsonNode(e.target)) {
@@ -4653,12 +4841,6 @@ async function init() {
     }
   });
   el.msgFilter.addEventListener('input', () => applyMsgFilter());
-  el.histModal.addEventListener('click', (e) => {
-    if (e.target === el.histModal) closeHistoryModal();
-  });
-  el.recordModal?.addEventListener('click', (e) => {
-    if (e.target === el.recordModal) closeRecordModal();
-  });
   el.btnRecordClose?.addEventListener('click', closeRecordModal);
   el.btnRecordCancel?.addEventListener('click', closeRecordModal);
   el.btnRecordSave?.addEventListener('click', saveRecord);
@@ -4692,12 +4874,16 @@ async function init() {
   document.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && String(e.key).toLowerCase() === 's') {
       e.preventDefault();
-      if (confirmModalOpen() || urlModalOpen() || recordModalOpen() || promptModalOpen()) return;
+      if (confirmModalOpen() || urlModalOpen() || recordModalOpen() || promptModalOpen() || settingsOpen()) return;
       if (el.histModal && !el.histModal.classList.contains('hidden')) return;
       saveCurrentRequest();
       return;
     }
     if (e.key !== 'Escape') return;
+    if (settingsOpen()) {
+      closeSettings();
+      return;
+    }
     if (groupMenuOpen()) {
       closeGroupMenu();
       return;
@@ -4767,7 +4953,10 @@ async function init() {
   el.btnEnvMore?.addEventListener('click', openEnvMenu);
   el.btnCatalogToggle?.addEventListener('click', () => setCatalogOpen(!catalogOpen()));
   el.btnCatalogAdd?.addEventListener('click', () => addCatalogRequest(''));
-  el.btnCatalogExport?.addEventListener('click', exportCatalog);
+  el.btnCatalogExport?.addEventListener('click', (e) => {
+    e.preventDefault();
+    openExportMenu(el.btnCatalogExport);
+  });
   el.btnCatalogImport?.addEventListener('click', importCatalog);
   el.btnSaveReq?.addEventListener('click', saveCurrentRequest);
   el.btnSaveWS?.addEventListener('click', saveCurrentRequest);

@@ -11,12 +11,23 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
+const catalogBundleKind = "ws-desk-catalogs"
+
+type catalogBundle struct {
+	Kind     string    `json:"kind"`
+	Profiles []Profile `json:"profiles"`
+}
+
 func catalogExportFileName(name string) string {
 	base := strings.TrimSuffix(profileFileName(name), ".json")
 	if base == "" || base == "profile" {
 		return "catalog.json"
 	}
 	return base + "-catalog.json"
+}
+
+func catalogBundleFileName() string {
+	return "apitest-catalogs.json"
 }
 
 func catalogExportProfile(p Profile) Profile {
@@ -54,6 +65,21 @@ func parseImportFile(raw []byte) (Profile, error) {
 		return parseApizzaProject(raw)
 	}
 	return parseCatalogFile(raw)
+}
+
+func parseCatalogBundle(raw []byte) ([]Profile, bool) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return nil, false
+	}
+	var wrap catalogBundle
+	if err := json.Unmarshal(raw, &wrap); err != nil {
+		return nil, false
+	}
+	if strings.TrimSpace(wrap.Kind) != catalogBundleKind || len(wrap.Profiles) == 0 {
+		return nil, false
+	}
+	return wrap.Profiles, true
 }
 
 func normalizeSavedRequest(r SavedRequest) SavedRequest {
@@ -611,6 +637,53 @@ func (a *App) exportCatalog(p Profile) (bool, error) {
 	return true, nil
 }
 
+func (a *App) exportAllCatalogs() (bool, error) {
+	if a.ctx == nil {
+		return false, fmt.Errorf("app not ready")
+	}
+	_ = a.compactProjectCatalogs()
+	list, err := a.loadProfiles()
+	if err != nil {
+		return false, err
+	}
+	out := make([]Profile, 0, len(list))
+	for _, p := range list {
+		p = catalogExportProfile(p)
+		if p.Name == "" && p.URL == "" && len(p.Requests) == 0 {
+			continue
+		}
+		out = append(out, p)
+	}
+	if len(out) == 0 {
+		return false, fmt.Errorf("nothing to export")
+	}
+	path, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "导出全部接口",
+		DefaultFilename: catalogBundleFileName(),
+		Filters: []runtime.FileFilter{
+			{DisplayName: "JSON", Pattern: "*.json"},
+			{DisplayName: "All Files", Pattern: "*.*"},
+		},
+	})
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(path) == "" {
+		return false, nil
+	}
+	if !strings.HasSuffix(strings.ToLower(path), ".json") {
+		path += ".json"
+	}
+	data, err := json.MarshalIndent(catalogBundle{Kind: catalogBundleKind, Profiles: out}, "", "  ")
+	if err != nil {
+		return false, err
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (a *App) importCatalog() (*Profile, error) {
 	if a.ctx == nil {
 		return nil, fmt.Errorf("app not ready")
@@ -636,13 +709,27 @@ func (a *App) importCatalog() (*Profile, error) {
 }
 
 func (a *App) applyImportedFile(raw []byte) (*Profile, error) {
+	if list, ok := parseCatalogBundle(raw); ok {
+		return a.applyImportedProfiles(list)
+	}
 	src, err := parseImportFile(raw)
 	if err != nil {
 		return nil, err
 	}
-	buckets, err := splitImportByHost(src)
-	if err != nil {
-		return nil, err
+	return a.applyImportedProfiles([]Profile{src})
+}
+
+func (a *App) applyImportedProfiles(list []Profile) (*Profile, error) {
+	var buckets []Profile
+	for _, src := range list {
+		parts, err := splitImportByHost(src)
+		if err != nil {
+			return nil, err
+		}
+		buckets = append(buckets, parts...)
+	}
+	if len(buckets) == 0 {
+		return nil, fmt.Errorf("nothing to import")
 	}
 	focus := pickPrimaryImport(buckets).Name
 	var primary Profile

@@ -26,6 +26,10 @@ export function Disconnect() {
   return window['go']['main']['App']['Disconnect']();
 }
 
+export function ExportAllCatalogs() {
+  return window['go']['main']['App']['ExportAllCatalogs']();
+}
+
 export function ExportCatalog(arg1) {
   return window['go']['main']['App']['ExportCatalog'](arg1);
 }

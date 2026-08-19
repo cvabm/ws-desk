@@ -122,6 +122,11 @@ func (a *App) ExportCatalog(p Profile) (bool, error) {
 	return a.exportCatalog(p)
 }
 
+// ExportAllCatalogs writes every local project catalog into one JSON bundle.
+func (a *App) ExportAllCatalogs() (bool, error) {
+	return a.exportAllCatalogs()
+}
+
 // ImportCatalog writes a picked catalog JSON, Postman Collection, or ApiZza project onto the hosts in the file.
 func (a *App) ImportCatalog() (*Profile, error) {
 	return a.importCatalog()

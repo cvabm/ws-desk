@@ -14,6 +14,54 @@ func TestCatalogExportFileName(t *testing.T) {
 	if catalogExportFileName("") != "catalog.json" {
 		t.Fatalf("empty name = %q", catalogExportFileName(""))
 	}
+	if catalogBundleFileName() != "apitest-catalogs.json" {
+		t.Fatalf("bundle name = %q", catalogBundleFileName())
+	}
+}
+
+func TestParseCatalogBundle(t *testing.T) {
+	list, ok := parseCatalogBundle([]byte(`{
+	  "kind": "ws-desk-catalogs",
+	  "profiles": [
+	    {"name":"https://a.example","url":"https://a.example/x","project":"甲","requests":[{"id":"1","title":"A"}]},
+	    {"name":"wss://b.example","url":"wss://b.example/im","project":"乙","requests":[{"id":"2","title":"B"}]}
+	  ]
+	}`))
+	if !ok || len(list) != 2 {
+		t.Fatalf("bundle = ok=%v len=%d", ok, len(list))
+	}
+	if list[0].Project != "甲" || list[1].Name != "wss://b.example" {
+		t.Fatalf("profiles = %#v", list)
+	}
+	if _, ok := parseCatalogBundle([]byte(`{"name":"https://a.example","url":"https://a.example"}`)); ok {
+		t.Fatal("single catalog should not parse as bundle")
+	}
+}
+
+func TestImportCatalogBundle(t *testing.T) {
+	dir := t.TempDir()
+	a := NewApp()
+	a.baseDir = dir
+	if err := os.MkdirAll(filepath.Join(dir, "servers"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.applyImportedFile([]byte(`{
+	  "kind": "ws-desk-catalogs",
+	  "profiles": [
+	    {"name":"https://a.example","url":"https://a.example/x","project":"甲","requests":[{"id":"a1","title":"登录","url":"https://a.example/login"}]},
+	    {"name":"wss://b.example","url":"wss://b.example/im","project":"乙","requests":[{"id":"b1","title":"心跳","url":"wss://b.example/im"}]}
+	  ]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.Name == "" {
+		t.Fatalf("primary = %+v", got)
+	}
+	list := a.GetProfiles()
+	if len(list) != 2 {
+		t.Fatalf("profiles = %d %#v", len(list), namesOf(list))
+	}
 }
 
 func TestMergeImportedCatalog(t *testing.T) {

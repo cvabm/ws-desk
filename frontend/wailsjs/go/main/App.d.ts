@@ -14,6 +14,8 @@ export function DeleteRequest(arg1:string,arg2:string):Promise<void>;
 
 export function Disconnect():Promise<void>;
 
+export function ExportAllCatalogs():Promise<boolean>;
+
 export function ExportCatalog(arg1:main.Profile):Promise<boolean>;
 
 export function FormatJSON(arg1:string):Promise<string>;

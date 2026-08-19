@@ -58,6 +58,7 @@
       </div>
       <button id="btnHistory" class="btn ghost bar-btn" type="button" title="历史会话">历史</button>
       <button id="btnTheme" class="btn ghost bar-btn" type="button" title="切换主题">深色</button>
+      <button id="btnSettings" class="btn ghost bar-btn" type="button" title="设置">设置</button>
     </header>
     <div id="catalogTip" class="catalog-tip" hidden></div>
 
@@ -77,7 +78,7 @@
           <span id="catalogTitle">接口</span>
           <div class="pane-actions">
             <input id="catalogFilter" class="input search-inline catalog-filter" type="search" spellcheck="false" placeholder="搜索全部主机…"/>
-            <button id="btnCatalogExport" class="btn ghost bar-btn btn-icon" type="button" title="导出当前主机接口" aria-label="导出当前主机接口">
+            <button id="btnCatalogExport" class="btn ghost bar-btn btn-icon" type="button" title="导出接口" aria-label="导出接口" aria-haspopup="menu" aria-expanded="false">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.6v7.2M5.2 7.4L8 10.4l2.8-3M3.2 13.2h9.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
             <button id="btnCatalogImport" class="btn ghost bar-btn btn-icon" type="button" title="导入本机目录或 Postman Collection（按文件里的主机）" aria-label="导入本机目录或 Postman Collection">
@@ -91,13 +92,15 @@
         <div id="catalogList" class="catalog-list"></div>
       </aside>
       <section id="docPane" class="doc-pane">
-        <div class="pane-head">
-          <span id="docHeadTitle">接口详情</span>
-        </div>
-        <div id="docEmpty" class="doc-empty">从左侧选择一个接口，查看并编辑说明、请求和返回示例。</div>
+        <div id="docEmpty" class="doc-empty">从左侧选择一个接口，查看说明、请求和返回示例。</div>
         <div id="docBody" class="doc-body hidden">
-          <div id="docMeta" class="doc-meta"></div>
-          <div id="docSummary" class="doc-summary"></div>
+          <div class="doc-top">
+            <div id="docMeta" class="doc-meta"></div>
+            <button id="btnDocEdit" class="doc-edit-toggle" type="button" role="switch" aria-checked="false" title="允许编辑当前接口文档">
+              <span class="doc-edit-label">允许编辑</span>
+              <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+            </button>
+          </div>
           <div id="docExtra" class="doc-extra"></div>
           <div class="doc-cols">
             <div class="doc-col">
@@ -107,7 +110,8 @@
                   <button id="btnCopyDocReq" class="btn ghost" type="button" title="复制请求">复制</button>
                 </div>
               </div>
-              <textarea id="docReq" class="doc-block doc-edit" spellcheck="false" placeholder="请求体，可直接改"></textarea>
+              <div id="docReqView" class="doc-block doc-view"></div>
+              <textarea id="docReq" class="doc-block doc-edit hidden" spellcheck="false" readonly placeholder=""></textarea>
             </div>
             <div class="doc-col">
               <div class="doc-col-head">
@@ -116,7 +120,8 @@
                   <button id="btnCopyDocRes" class="btn ghost" type="button" title="复制返回示例">复制</button>
                 </div>
               </div>
-              <textarea id="docRes" class="doc-block doc-edit" spellcheck="false" placeholder="返回示例，可直接改"></textarea>
+              <div id="docResView" class="doc-block doc-view"></div>
+              <textarea id="docRes" class="doc-block doc-edit hidden" spellcheck="false" readonly placeholder=""></textarea>
             </div>
           </div>
         </div>
@@ -280,6 +285,46 @@
       <div class="record-foot">
         <button id="btnUrlModalCancel" class="btn ghost" type="button">取消</button>
         <button id="btnUrlModalOk" class="btn primary" type="button">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- settings modal -->
+  <div id="settingsModal" class="modal hidden" aria-hidden="true">
+    <div class="modal-card settings-card">
+      <div class="modal-head">
+        <span>设置</span>
+        <div class="pane-actions">
+          <button id="btnSettingsClose" class="btn ghost" type="button">关闭</button>
+        </div>
+      </div>
+      <div class="settings-layout">
+        <nav id="settingsNav" class="settings-nav" aria-label="设置分类">
+          <button type="button" class="settings-nav-item on" data-section="catalog">接口列表</button>
+        </nav>
+        <div id="settingsMain" class="settings-main">
+          <section class="settings-section" data-section="catalog">
+            <div class="settings-section-title">接口列表</div>
+            <div class="settings-field">
+              <div class="settings-field-label">鼠标停留</div>
+              <div class="settings-field-hint">鼠标停在左侧接口上时怎么提示</div>
+              <label class="settings-choice">
+                <input type="radio" name="catalogHover" value="title"/>
+                <span>
+                  <strong>弹出标题</strong>
+                  <em>标题没显示全时，弹出完整标题</em>
+                </span>
+              </label>
+              <label class="settings-choice">
+                <input type="radio" name="catalogHover" value="detail"/>
+                <span>
+                  <strong>弹出接口详情</strong>
+                  <em>停留时显示请求路径、头和体</em>
+                </span>
+              </label>
+            </div>
+          </section>
+        </div>
       </div>
     </div>
   </div>
