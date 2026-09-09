@@ -6,16 +6,13 @@ import (
 	"testing"
 )
 
-func TestNormalizeEnvironmentsFromVariableList(t *testing.T) {
+func TestNormalizeEnvironmentsWithoutListIsEmpty(t *testing.T) {
 	envs, active := normalizeEnvironments(nil, "", []HeaderItem{
 		{Key: "Token", Value: "abc", Enabled: true},
 		{Key: "  ", Value: "skip", Enabled: true},
 	})
-	if active != "默认" || len(envs) != 1 || envs[0].Name != "默认" {
+	if active != "" || len(envs) != 0 {
 		t.Fatalf("envs=%#v active=%q", envs, active)
-	}
-	if len(envs[0].Variables) != 1 || envs[0].Variables[0].Value != "abc" {
-		t.Fatalf("vars=%#v", envs[0].Variables)
 	}
 }
 
@@ -85,6 +82,26 @@ func TestMergeImportedEnvironmentsKeepsActive(t *testing.T) {
 	}
 	if got.Environments[2].Name != "测试" {
 		t.Fatalf("missing imported env: %#v", got.Environments)
+	}
+}
+
+func TestProfileCanHaveNoEnvironments(t *testing.T) {
+	dir := t.TempDir()
+	a := NewApp()
+	a.baseDir = dir
+	if err := a.SaveProfile(Profile{
+		URL:          "https://example.com/a",
+		Environments: []Environment{},
+		VariableList: []HeaderItem{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := a.GetProfiles()
+	if len(got) != 1 {
+		t.Fatalf("profiles=%d", len(got))
+	}
+	if len(got[0].Environments) != 0 || got[0].ActiveEnv != "" {
+		t.Fatalf("empty environments not preserved: %#v active=%q", got[0].Environments, got[0].ActiveEnv)
 	}
 }
 

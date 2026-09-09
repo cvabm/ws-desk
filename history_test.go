@@ -31,7 +31,7 @@ func TestLoadSessionSlimsBodies(t *testing.T) {
 	dir := t.TempDir()
 	a := NewApp()
 	a.baseDir = dir
-	logDir := filepath.Join(dir, "requests")
+	logDir := a.requestsDir()
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

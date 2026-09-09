@@ -438,6 +438,24 @@ func mergeDedupedRequests(dst, src []SavedRequest) []SavedRequest {
 }
 
 func mergeProjectCatalogs(dst, src Profile) Profile {
+	if strings.TrimSpace(dst.URL) == "" && strings.TrimSpace(src.URL) != "" {
+		dst.Name = src.Name
+		dst.URL = src.URL
+		dst.Protocol = src.Protocol
+		dst.Method = src.Method
+		dst.Headers = src.Headers
+		dst.HeaderList = src.HeaderList
+		dst.AuthType = src.AuthType
+		dst.AuthToken = src.AuthToken
+		dst.AuthUser = src.AuthUser
+		dst.AuthPass = src.AuthPass
+		dst.BodyType = src.BodyType
+		dst.Body = src.Body
+		dst.FormList = src.FormList
+		dst.Reconnect = src.Reconnect
+		dst.PingSec = src.PingSec
+		dst.NoFollowRedirects = src.NoFollowRedirects
+	}
 	dst.Requests = mergeDedupedRequests(dst.Requests, src.Requests)
 	mods := append([]string{}, dst.Modules...)
 	mods = append(mods, src.Modules...)
@@ -451,50 +469,6 @@ func mergeProjectCatalogs(dst, src Profile) Profile {
 		dst.Project = src.Project
 	}
 	return dst
-}
-
-func (a *App) compactProjectCatalogs() error {
-	list, err := a.loadProfiles()
-	if err != nil {
-		return err
-	}
-	groups := map[string][]Profile{}
-	order := make([]string, 0)
-	for _, p := range list {
-		proj := explicitProjectName(p)
-		if proj == "" {
-			continue
-		}
-		if _, ok := groups[proj]; !ok {
-			order = append(order, proj)
-		}
-		groups[proj] = append(groups[proj], p)
-	}
-	for _, proj := range order {
-		members := groups[proj]
-		if len(members) < 2 {
-			continue
-		}
-		keep := pickPrimaryImport(members)
-		for _, p := range members {
-			if p.Name == keep.Name {
-				continue
-			}
-			keep = mergeProjectCatalogs(keep, p)
-		}
-		if err := a.saveProfileFile(keep); err != nil {
-			return err
-		}
-		for _, p := range members {
-			if p.Name == keep.Name {
-				continue
-			}
-			if err := a.deleteProfile(p.Name); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 func splitImportByHost(src Profile) ([]Profile, error) {
@@ -641,7 +615,6 @@ func (a *App) exportAllCatalogs() (bool, error) {
 	if a.ctx == nil {
 		return false, fmt.Errorf("app not ready")
 	}
-	_ = a.compactProjectCatalogs()
 	list, err := a.loadProfiles()
 	if err != nil {
 		return false, err
@@ -746,19 +719,7 @@ func (a *App) applyImportedProfiles(list []Profile) (*Profile, error) {
 			primary = merged
 		}
 	}
-	if err := a.compactProjectCatalogs(); err != nil {
-		return nil, err
-	}
-	if proj := explicitProjectName(primary); proj != "" {
-		if list, err := a.loadProfiles(); err == nil {
-			for _, p := range list {
-				if explicitProjectName(p) == proj {
-					primary = p
-					break
-				}
-			}
-		}
-	} else if primary.Name != "" {
+	if primary.Name != "" {
 		if got, err := a.loadProfileByName(primary.Name); err == nil {
 			primary = got
 		}

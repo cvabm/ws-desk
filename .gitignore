@@ -4,4 +4,5 @@ frontend/dist
 requests/
 ws-logs/
 servers/
+app-data/
 *.exe

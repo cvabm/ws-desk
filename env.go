@@ -1,29 +1,26 @@
 package main
 
-func defaultEnvName() string { return "默认" }
-
 func normalizeVarRows(list []HeaderItem) []HeaderItem {
 	return mergeVariables(nil, list)
 }
 
 func normalizeEnvironment(e Environment) Environment {
 	e.Name = clipRunes(e.Name, 80)
-	if e.Name == "" {
-		e.Name = defaultEnvName()
-	}
 	e.Variables = normalizeVarRows(e.Variables)
 	return e
 }
 
 func normalizeEnvironments(list []Environment, active string, fallback []HeaderItem) ([]Environment, string) {
 	if len(list) == 0 {
-		name := defaultEnvName()
-		return []Environment{{Name: name, Variables: normalizeVarRows(fallback)}}, name
+		return []Environment{}, ""
 	}
 	seen := make(map[string]int, len(list))
 	out := make([]Environment, 0, len(list))
 	for _, e := range list {
 		e = normalizeEnvironment(e)
+		if e.Name == "" {
+			continue
+		}
 		if i, ok := seen[e.Name]; ok {
 			out[i].Variables = mergeVariables(out[i].Variables, e.Variables)
 			continue
@@ -59,10 +56,7 @@ func setEnvVariables(envs []Environment, active string, rows []HeaderItem) []Env
 		}
 	}
 	if len(envs) == 0 {
-		if active == "" {
-			active = defaultEnvName()
-		}
-		return []Environment{{Name: active, Variables: rows}}
+		return envs
 	}
 	envs[0].Variables = rows
 	return envs
@@ -90,6 +84,11 @@ func mergeEnvironments(dst, src []Environment) []Environment {
 
 func finishProfileEnvs(p Profile) Profile {
 	p.Environments, p.ActiveEnv = normalizeEnvironments(p.Environments, p.ActiveEnv, p.VariableList)
+	if len(p.Environments) == 0 {
+		p.ActiveEnv = ""
+		p.VariableList = nil
+		return p
+	}
 	if p.VariableList != nil {
 		p.Environments = setEnvVariables(p.Environments, p.ActiveEnv, p.VariableList)
 	}

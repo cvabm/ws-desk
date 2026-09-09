@@ -240,6 +240,27 @@ html, body {
   flex-shrink: 0;
 }
 
+.btn-project-action {
+  display: none !important;
+  flex-shrink: 0;
+}
+
+.app.doc-mode:not(.history) .btn-project-action {
+  display: inline-flex !important;
+}
+
+.btn-project-action:hover:not(:disabled) {
+  color: var(--primary-text);
+  background: var(--primary-bg);
+  border-color: var(--primary-border);
+}
+
+.btn-project-delete:hover:not(:disabled) {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+}
+
 .btn-add-profile:hover:not(:disabled) {
   color: var(--primary-text);
   background: var(--primary-bg);
@@ -633,18 +654,27 @@ html, body {
   display: none !important;
 }
 
-.app.doc-mode:not(.history) #envWrap,
-.app.doc-mode:not(.history) #btnAddProfile,
-.app.doc-mode:not(.history) #btnDelProfile,
-.app.doc-mode:not(.history) #urlWrap,
-.app.doc-mode:not(.history) #protocol,
-.app.doc-mode:not(.history) #method,
-.app.doc-mode:not(.history) #reconnectWrap,
-.app.doc-mode:not(.history) #redirectWrap,
-.app.doc-mode:not(.history) #btnToggle,
-.app.doc-mode:not(.history) #btnSendTop,
-.app.doc-mode:not(.history) #btnRecord,
-.app.doc-mode:not(.history) #state {
+.app.doc-mode:not(.history) .bar > #envWrap,
+.app.doc-mode:not(.history) .bar > #btnAddProfile,
+.app.doc-mode:not(.history) .bar > #btnDelProfile,
+.app.doc-mode:not(.history) .bar > #urlWrap,
+.app.doc-mode:not(.history) .bar > #protocol,
+.app.doc-mode:not(.history) .bar > #method,
+.app.doc-mode:not(.history) .bar > #reconnectWrap,
+.app.doc-mode:not(.history) .bar > #redirectWrap,
+.app.doc-mode:not(.history) .bar > #btnToggle,
+.app.doc-mode:not(.history) .bar > #btnSendTop,
+.app.doc-mode:not(.history) .bar > #btnRecord,
+.app.doc-mode:not(.history) .bar > #state {
+  display: none !important;
+}
+
+/* 接口目录的结构维护属于文档模式；调试侧只保留选择与执行。 */
+.app:not(.doc-mode) #btnCatalogAdd,
+.app:not(.doc-mode) #btnCatalogImport,
+.app:not(.doc-mode) #btnCatalogExport,
+.app:not(.doc-mode) .catalog-item-more,
+.app:not(.doc-mode) .catalog-add-module {
   display: none !important;
 }
 
@@ -1319,6 +1349,51 @@ html[data-theme="dark"] .app.doc-mode:not(.doc-editing) .doc-view {
   gap: 10px;
 }
 
+.doc-config {
+  display: none;
+}
+
+.app.doc-editing .doc-extra {
+  display: none;
+}
+
+.app.doc-editing .doc-config {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.app.doc-editing .doc-config::before {
+  content: "请求配置";
+  flex: 0 0 100%;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.app.doc-editing .doc-config .url-wrap {
+  flex: 1 1 280px;
+}
+
+.app.doc-editing .doc-config .req-builder {
+  flex: 1 0 100%;
+  min-height: 340px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+.app.doc-editing .doc-config.ws-config .url-wrap {
+  flex-basis: 320px;
+}
+
 .doc-sec-head {
   margin-bottom: 6px;
   color: var(--muted);
@@ -1444,6 +1519,11 @@ textarea.doc-edit::placeholder {
 
 .doc-muted {
   color: var(--muted);
+}
+
+/* HTTP 编辑时请求体在上方的请求配置中，隐藏左列后让返回示例占满宽度。 */
+.doc-cols:has(#docReqCol.hidden) {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 @media (max-width: 980px) {

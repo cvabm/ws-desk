@@ -2,17 +2,22 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // App is the Wails application API surface.
 type App struct {
-	ctx     context.Context
-	baseDir string
-	hub     *clientHub
+	ctx            context.Context
+	baseDir        string
+	defaultBaseDir string
+	hub            *clientHub
 
 	histMu   sync.Mutex
 	histPath string
@@ -22,15 +27,21 @@ type App struct {
 // NewApp creates a new App application struct.
 func NewApp() *App {
 	base := resolveBaseDir()
-	a := &App{baseDir: base}
+	a := &App{baseDir: filepath.Join(base, "app-data"), defaultBaseDir: base}
 	a.hub = newClientHub(a)
 	return a
 }
 
 func resolveBaseDir() string {
-	// Prefer executable directory when packaged; fall back to cwd for `wails dev`.
+	// A local Wails build lives in <project>/build/bin. Its data must live at
+	// the project root rather than in the disposable build output directory.
 	if exe, err := os.Executable(); err == nil {
 		dir := filepath.Dir(exe)
+		if filepath.Base(dir) == "bin" && filepath.Base(filepath.Dir(dir)) == "build" {
+			return filepath.Dir(filepath.Dir(dir))
+		}
+
+		// Prefer executable directory when packaged; fall back to cwd for `wails dev`.
 		// wails dev runs from a temp build path; if no data dirs nearby, use cwd.
 		for _, name := range []string{"servers", "requests", "profiles", "ws-logs"} {
 			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
@@ -45,16 +56,77 @@ func resolveBaseDir() string {
 }
 
 func (a *App) serversDir() string {
-	return filepath.Join(a.baseDir, "servers")
+	return filepath.Join(a.baseDir, "connection-profiles")
 }
 
 func (a *App) requestsDir() string {
-	return filepath.Join(a.baseDir, "requests")
+	return filepath.Join(a.baseDir, "api-requests")
 }
 
 func (a *App) migrateDataDirs() {
-	renameDirIfNeeded(filepath.Join(a.baseDir, "profiles"), a.serversDir())
-	renameDirIfNeeded(filepath.Join(a.baseDir, "ws-logs"), a.requestsDir())
+	// Keep user data outside build/bin: Wails rebuilds can replace that directory.
+	// The old names are retained here solely to migrate existing installations.
+	for _, oldPath := range []string{
+		filepath.Join(a.defaultBaseDir, "app-data", "app-data", "connection-profiles"),
+		filepath.Join(a.defaultBaseDir, "app-data", "connection-profiles"),
+		filepath.Join(a.defaultBaseDir, "build", "bin", "servers"),
+		filepath.Join(a.defaultBaseDir, "servers"),
+		filepath.Join(a.defaultBaseDir, "profiles"),
+	} {
+		renameDirIfNeeded(oldPath, a.serversDir())
+	}
+	for _, oldPath := range []string{
+		filepath.Join(a.defaultBaseDir, "app-data", "app-data", "api-requests"),
+		filepath.Join(a.defaultBaseDir, "app-data", "api-requests"),
+		filepath.Join(a.defaultBaseDir, "build", "bin", "requests"),
+		filepath.Join(a.defaultBaseDir, "requests"),
+		filepath.Join(a.defaultBaseDir, "ws-logs"),
+	} {
+		renameDirIfNeeded(oldPath, a.requestsDir())
+	}
+}
+
+type dataLocationConfig struct {
+	Directory string `json:"directory"`
+}
+
+func dataLocationConfigPath() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "ApiTester", "data-location.json")
+}
+
+func (a *App) selectDataBaseDir() string {
+	path := dataLocationConfigPath()
+	if path != "" {
+		if raw, err := os.ReadFile(path); err == nil {
+			var cfg dataLocationConfig
+			if json.Unmarshal(raw, &cfg) == nil && cfg.Directory != "" {
+				return filepath.Clean(cfg.Directory)
+			}
+		}
+	}
+
+	base := filepath.Join(a.defaultBaseDir, "app-data")
+	if a.ctx != nil {
+		picked, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
+			Title: "选择 ApiTester 数据文件夹",
+		})
+		if err == nil && picked != "" {
+			base = filepath.Clean(picked)
+		}
+	}
+
+	if path != "" {
+		data, err := json.Marshal(dataLocationConfig{Directory: base})
+		if err == nil {
+			_ = os.MkdirAll(filepath.Dir(path), 0o755)
+			_ = os.WriteFile(path, data, 0o600)
+		}
+	}
+	return base
 }
 
 func renameDirIfNeeded(oldPath, newPath string) {
@@ -72,6 +144,7 @@ func renameDirIfNeeded(oldPath, newPath string) {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	a.baseDir = a.selectDataBaseDir()
 	a.migrateDataDirs()
 	_ = os.MkdirAll(a.requestsDir(), 0o755)
 	_ = a.ensureServers()
@@ -84,8 +157,8 @@ func (a *App) shutdown(ctx context.Context) {
 }
 
 // GetProfiles returns saved connection profiles (one per scheme + host[:port]).
+// Reading profiles must never rewrite or remove user data.
 func (a *App) GetProfiles() []Profile {
-	_ = a.compactProjectCatalogs()
 	list, err := a.loadProfiles()
 	if err != nil {
 		return nil
@@ -95,16 +168,26 @@ func (a *App) GetProfiles() []Profile {
 
 // SaveProfile writes a profile keyed by scheme://host[:port].
 func (a *App) SaveProfile(p Profile) error {
-	if p.URL == "" {
-		return fmt.Errorf("url is required")
-	}
-	if name := profileNameFromURL(p.URL); name != "" {
-		p.Name = name
+	p.URL = strings.TrimSpace(p.URL)
+	if p.URL != "" {
+		if name := profileNameFromURL(p.URL); name != "" {
+			p.Name = name
+		}
+	} else if strings.TrimSpace(p.Project) != "" && strings.TrimSpace(p.Name) == "" {
+		p.Name = "project:" + strings.TrimSpace(p.Project)
 	}
 	if p.Name == "" {
-		return fmt.Errorf("url host is required")
+		return fmt.Errorf("project or url host is required")
 	}
-	return a.saveProfileFile(a.mergeProfileRequests(p))
+	previous, _ := a.loadProfileByName(p.Name)
+	p = a.mergeProfileRequests(p)
+	if err := a.saveProfileFile(p); err != nil {
+		return err
+	}
+	if previous.Name != "" && !strings.EqualFold(profileStorageFileName(previous), profileStorageFileName(p)) {
+		_ = os.Remove(filepath.Join(a.serversDir(), profileStorageFileName(previous)))
+	}
+	return nil
 }
 
 // SaveRequest upserts a named request bookmark under the host profile.

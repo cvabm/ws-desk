@@ -99,9 +99,33 @@ func profileFileName(name string) string {
 	return sanitizeName(name) + ".json"
 }
 
+// profileStorageFileName uses the project name for on-disk storage. The URL
+// remains in Profile.Name so connections and requests can still be addressed
+// by their scheme and host.
+func profileStorageFileName(p Profile) string {
+	if project := strings.TrimSpace(p.Project); project != "" {
+		return sanitizeName(project) + ".json"
+	}
+	return profileFileName(p.Name)
+}
+
 func (a *App) saveProfileFile(p Profile) error {
 	if err := a.ensureServers(); err != nil {
 		return err
+	}
+	path := filepath.Join(a.serversDir(), profileStorageFileName(p))
+	if strings.TrimSpace(p.Project) != "" {
+		if raw, err := os.ReadFile(path); err == nil {
+			var existing Profile
+			if json.Unmarshal(raw, &existing) == nil {
+				if name := profileNameFromURL(existing.URL); name != "" {
+					existing.Name = name
+				}
+				if existing.Name != "" && existing.Name != p.Name && strings.TrimSpace(existing.Project) == strings.TrimSpace(p.Project) {
+					p = mergeProjectCatalogs(existing, p)
+				}
+			}
+		}
 	}
 	if p.Headers == nil {
 		p.Headers = map[string]string{}
@@ -112,7 +136,7 @@ func (a *App) saveProfileFile(p Profile) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(a.serversDir(), profileFileName(p.Name)), data, 0o644)
+	return os.WriteFile(path, data, 0o644)
 }
 
 func (a *App) loadProfiles() ([]Profile, error) {
@@ -175,11 +199,11 @@ func (a *App) migrateLegacyNamedProfiles() error {
 		if name == "" {
 			continue
 		}
-		want := profileFileName(name)
+		p.Name = name
+		want := profileStorageFileName(p)
 		if strings.EqualFold(e.Name(), want) && p.Name == name {
 			continue
 		}
-		p.Name = name
 		if err := a.saveProfileFile(p); err != nil {
 			continue
 		}
@@ -205,7 +229,12 @@ func (a *App) deleteProfile(name string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	path, err := filepath.Abs(filepath.Join(dir, profileFileName(name)))
+	p, loadErr := a.loadProfileByName(name)
+	fileName := profileFileName(name)
+	if loadErr == nil {
+		fileName = profileStorageFileName(p)
+	}
+	path, err := filepath.Abs(filepath.Join(dir, fileName))
 	if err != nil {
 		return err
 	}
@@ -255,23 +284,16 @@ func (a *App) loadProfileByName(name string) (Profile, error) {
 	if err := a.ensureServers(); err != nil {
 		return Profile{}, err
 	}
-	raw, err := os.ReadFile(filepath.Join(a.serversDir(), profileFileName(name)))
+	list, err := a.loadProfiles()
 	if err != nil {
 		return Profile{}, err
 	}
-	var p Profile
-	if err := json.Unmarshal(raw, &p); err != nil {
-		return Profile{}, err
+	for _, p := range list {
+		if p.Name == name {
+			return p, nil
+		}
 	}
-	if n := profileNameFromURL(p.URL); n != "" {
-		p.Name = n
-	} else if p.Name == "" {
-		p.Name = name
-	}
-	if p.Headers == nil {
-		p.Headers = map[string]string{}
-	}
-	return p, nil
+	return Profile{}, os.ErrNotExist
 }
 
 func normalizeModules(list []string) []string {

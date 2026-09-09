@@ -10,7 +10,7 @@ func TestSaveProfileOneFilePerHost(t *testing.T) {
 	dir := t.TempDir()
 	a := NewApp()
 	a.baseDir = dir
-	if err := os.MkdirAll(filepath.Join(dir, "servers"), 0o755); err != nil {
+	if err := os.MkdirAll(a.serversDir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -31,7 +31,7 @@ func TestSaveProfileOneFilePerHost(t *testing.T) {
 	if list[0].URL != "https://example.com/b" {
 		t.Fatalf("url = %q", list[0].URL)
 	}
-	entries, err := os.ReadDir(filepath.Join(dir, "servers"))
+	entries, err := os.ReadDir(a.serversDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,6 +40,55 @@ func TestSaveProfileOneFilePerHost(t *testing.T) {
 	}
 	if entries[0].Name() != "https-example.com.json" {
 		t.Fatalf("filename = %q", entries[0].Name())
+	}
+}
+
+func TestProjectProfileUsesProjectFileName(t *testing.T) {
+	dir := t.TempDir()
+	a := NewApp()
+	a.baseDir = dir
+	if err := a.SaveProfile(Profile{URL: "https://example.com/a", Project: "gateway"}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(a.serversDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "gateway.json" {
+		t.Fatalf("project file = %#v", entries)
+	}
+	if _, err := a.loadProfileByName("https://example.com"); err != nil {
+		t.Fatalf("load by host: %v", err)
+	}
+	if err := a.SaveProfile(Profile{URL: "https://example.com/a", Project: "gateway-renamed"}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = os.ReadDir(a.serversDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "gateway-renamed.json" {
+		t.Fatalf("renamed project file = %#v", entries)
+	}
+}
+
+func TestProjectCanBeSavedWithoutAddress(t *testing.T) {
+	dir := t.TempDir()
+	a := NewApp()
+	a.baseDir = dir
+	if err := a.SaveProfile(Profile{Project: "gateway"}); err != nil {
+		t.Fatal(err)
+	}
+	profiles := a.GetProfiles()
+	if len(profiles) != 1 || profiles[0].Project != "gateway" || profiles[0].URL != "" {
+		t.Fatalf("empty project = %#v", profiles)
+	}
+	entries, err := os.ReadDir(a.serversDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "gateway.json" {
+		t.Fatalf("project file = %#v", entries)
 	}
 }
 

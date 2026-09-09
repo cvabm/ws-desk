@@ -1,11 +1,13 @@
-export const HOST_VAR_KEY = 'host';
+export const HOST_VAR_KEY = 'BASE_URL';
+
+const LEGACY_HOST_VAR_KEYS = new Set(['base_url', 'baseurl', 'host', 'url']);
 
 export function emptyRow() {
   return { key: '', value: '', enabled: true };
 }
 
 export function isHostVarKey(key) {
-  return String(key || '').trim().toLowerCase() === HOST_VAR_KEY;
+  return LEGACY_HOST_VAR_KEYS.has(String(key || '').trim().toLowerCase());
 }
 
 export function ensureHostVarRows(rows, fallbackURL = '') {
@@ -355,7 +357,7 @@ function bindKVRow(root, rows, i, onChange, opts) {
   if (locked) {
     rows[i].key = HOST_VAR_KEY;
     rows[i].enabled = true;
-    keyInput.title = 'host 固定，不能改名或删除';
+    keyInput.title = 'BASE_URL 固定，不能改名或删除';
   }
   const onBox = line.querySelector('.kv-on');
   if (onBox && !locked) {

@@ -117,17 +117,8 @@ func TestMergeImportedCatalog(t *testing.T) {
 	if len(got.Modules) != 3 || got.Modules[0] != "登录" || got.Modules[1] != "用户" || got.Modules[2] != "订单" {
 		t.Fatalf("modules = %#v", got.Modules)
 	}
-	if len(got.VariableList) != 3 {
-		t.Fatalf("vars = %#v", got.VariableList)
-	}
-	if got.VariableList[0].Key != "Token" || got.VariableList[0].Value != "new" {
-		t.Fatalf("token = %+v", got.VariableList[0])
-	}
-	if got.VariableList[1].Key != "Env" || got.VariableList[1].Value != "prod" {
-		t.Fatalf("env = %+v", got.VariableList[1])
-	}
-	if got.VariableList[2].Key != "Key" || got.VariableList[2].Enabled {
-		t.Fatalf("key = %+v", got.VariableList[2])
+	if len(got.Environments) != 0 || len(got.VariableList) != 0 {
+		t.Fatalf("automatic environment = %#v vars=%#v", got.Environments, got.VariableList)
 	}
 }
 
@@ -293,7 +284,7 @@ func TestApplyImportedFileDoesNotTouchOtherHost(t *testing.T) {
 	}
 }
 
-func TestCompactProjectCatalogsKeepsOneCopy(t *testing.T) {
+func TestSameProjectProfilesMerge(t *testing.T) {
 	dir := t.TempDir()
 	a := NewApp()
 	a.baseDir = dir
@@ -345,6 +336,29 @@ func namesOf(list []Profile) []string {
 		out[i] = p.Name
 	}
 	return out
+}
+
+func TestSaveProfileMergesSameProject(t *testing.T) {
+	a := NewApp()
+	a.baseDir = t.TempDir()
+	if err := a.SaveProfile(Profile{URL: "https://one.example", Project: "gateway"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SaveProfile(Profile{URL: "https://two.example", Project: "gateway"}); err != nil {
+		t.Fatal(err)
+	}
+
+	profiles := a.GetProfiles()
+	if len(profiles) != 1 {
+		t.Fatalf("GetProfiles() returned %d profiles, want 1", len(profiles))
+	}
+	entries, err := os.ReadDir(a.serversDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("same-project save created %d files, want 1", len(entries))
+	}
 }
 
 func TestImportCatalogMergesOnDisk(t *testing.T) {
@@ -406,7 +420,7 @@ func TestImportCatalogMergesOnDisk(t *testing.T) {
 	if len(got[0].Modules) != 2 || got[0].Modules[1] != "用户" {
 		t.Fatalf("modules = %#v", got[0].Modules)
 	}
-	if len(got[0].VariableList) != 1 || got[0].VariableList[0].Value != "new" {
-		t.Fatalf("vars = %#v", got[0].VariableList)
+	if len(got[0].Environments) != 0 || len(got[0].VariableList) != 0 {
+		t.Fatalf("automatic environment = %#v vars=%#v", got[0].Environments, got[0].VariableList)
 	}
 }
