@@ -1,10 +1,116 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestGetProfilesReportsMalformedFilesWithoutChangingThem(t *testing.T) {
+	a := NewApp()
+	a.baseDir = t.TempDir()
+	if err := os.MkdirAll(a.serversDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	badPath := filepath.Join(a.serversDir(), "broken.json")
+	badData := []byte(`{"project":`)
+	if err := os.WriteFile(badPath, badData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.saveProfileFile(Profile{Name: "project:ok", Project: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := a.GetProfiles(); len(got) != 1 || got[0].Project != "ok" {
+		t.Fatalf("profiles = %#v", got)
+	}
+	if warning := a.GetProfileLoadError(); !strings.Contains(warning, "broken.json") {
+		t.Fatalf("warning = %q", warning)
+	}
+	if got, err := os.ReadFile(badPath); err != nil || string(got) != string(badData) {
+		t.Fatalf("malformed file changed: %q, %v", got, err)
+	}
+}
+
+func TestSaveEmptyProjectDoesNotStoreRequestPathAsBaseURL(t *testing.T) {
+	a := NewApp()
+	a.baseDir = t.TempDir()
+	p := Profile{Name: "project:gateway", Project: "gateway", URL: "/users"}
+	if err := a.SaveProfile(p); err != nil {
+		t.Fatal(err)
+	}
+	got := a.GetProfiles()
+	if len(got) != 1 || got[0].URL != "" || got[0].Project != "gateway" {
+		t.Fatalf("profiles = %#v", got)
+	}
+}
+
+func TestProjectFileNameEncodingDoesNotCollide(t *testing.T) {
+	if got := encodeProjectFileName("二广"); got != "二广" {
+		t.Fatalf("readable name = %q", got)
+	}
+	left := encodeProjectFileName("a/b")
+	right := encodeProjectFileName("a:b")
+	if left == right {
+		t.Fatalf("encoded names collided: %q", left)
+	}
+	if got := encodeProjectFileName("CON"); got == "CON" {
+		t.Fatalf("reserved Windows name was not escaped")
+	}
+}
+
+func TestLegacyProjectFileNameMigrates(t *testing.T) {
+	a := NewApp()
+	a.baseDir = t.TempDir()
+	if err := os.MkdirAll(a.serversDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := Profile{Name: "https://example.com", URL: "https://example.com", Project: "a/b"}
+	raw, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldPath := filepath.Join(a.serversDir(), sanitizeName(p.Project)+".json")
+	if err := os.WriteFile(oldPath, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.GetProfiles(); len(got) != 1 {
+		t.Fatalf("profiles = %d", len(got))
+	}
+	newPath := filepath.Join(a.serversDir(), profileStorageFileName(p))
+	if _, err := os.Stat(newPath); err != nil {
+		t.Fatalf("new project file: %v", err)
+	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("legacy project file still exists: %v", err)
+	}
+}
+
+func TestSaveProjectDoesNotOverwriteInvalidExistingFile(t *testing.T) {
+	a := NewApp()
+	a.baseDir = t.TempDir()
+	if err := os.MkdirAll(a.serversDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := Profile{Project: "gateway"}
+	path := filepath.Join(a.serversDir(), profileStorageFileName(p))
+	original := []byte(`{"broken":`)
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SaveProfile(p); err == nil {
+		t.Fatal("expected invalid existing file error")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("invalid file was overwritten: %q", got)
+	}
+}
 
 func TestSaveProfileOneFilePerHost(t *testing.T) {
 	dir := t.TempDir()

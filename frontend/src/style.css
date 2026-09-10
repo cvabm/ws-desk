@@ -1394,6 +1394,17 @@ html[data-theme="dark"] .app.doc-mode:not(.doc-editing) .doc-view {
   flex-basis: 320px;
 }
 
+/* WebSocket 直接连接环境 BASE_URL：显示完整只读地址，不提供接口后缀。 */
+.app.doc-editing .doc-config.ws-config .url-prefix {
+  flex: 1 1 auto;
+  max-width: none;
+  border-right: 0;
+}
+
+.app.doc-editing .doc-config.ws-config .input.url {
+  display: none;
+}
+
 .doc-sec-head {
   margin-bottom: 6px;
   color: var(--muted);

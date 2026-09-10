@@ -104,9 +104,72 @@ func profileFileName(name string) string {
 // by their scheme and host.
 func profileStorageFileName(p Profile) string {
 	if project := strings.TrimSpace(p.Project); project != "" {
-		return sanitizeName(project) + ".json"
+		return encodeProjectFileName(project) + ".json"
 	}
 	return profileFileName(p.Name)
+}
+
+// encodeProjectFileName keeps ordinary project names readable while escaping
+// every Windows-unsafe or ambiguous character reversibly. Unlike sanitizeName,
+// slash/colon/etc. project names cannot collapse onto the same file name.
+func encodeProjectFileName(project string) string {
+	project = strings.TrimSpace(project)
+	if project == "" {
+		return "project"
+	}
+	runes := []rune(project)
+	var b strings.Builder
+	for i, r := range runes {
+		unsafe := r < 0x20 || strings.ContainsRune(`<>:"/\\|?*~`, r)
+		if i == len(runes)-1 && (r == '.' || r == ' ') {
+			unsafe = true
+		}
+		if unsafe {
+			for _, raw := range []byte(string(r)) {
+				fmt.Fprintf(&b, "~%02X", raw)
+			}
+			continue
+		}
+		b.WriteRune(r)
+	}
+	encoded := b.String()
+	stem := encoded
+	if i := strings.IndexByte(stem, '.'); i >= 0 {
+		stem = stem[:i]
+	}
+	switch strings.ToUpper(stem) {
+	case "CON", "PRN", "AUX", "NUL",
+		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+		encoded = "~00" + encoded
+	}
+	return encoded
+}
+
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".apitester-profile-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func (a *App) saveProfileFile(p Profile) error {
@@ -117,14 +180,22 @@ func (a *App) saveProfileFile(p Profile) error {
 	if strings.TrimSpace(p.Project) != "" {
 		if raw, err := os.ReadFile(path); err == nil {
 			var existing Profile
-			if json.Unmarshal(raw, &existing) == nil {
-				if name := profileNameFromURL(existing.URL); name != "" {
-					existing.Name = name
-				}
-				if existing.Name != "" && existing.Name != p.Name && strings.TrimSpace(existing.Project) == strings.TrimSpace(p.Project) {
-					p = mergeProjectCatalogs(existing, p)
-				}
+			if err := json.Unmarshal(raw, &existing); err != nil {
+				return fmt.Errorf("existing project file %q is invalid: %w", filepath.Base(path), err)
 			}
+			existingProject := strings.TrimSpace(existing.Project)
+			project := strings.TrimSpace(p.Project)
+			if existingProject != "" && existingProject != project {
+				return fmt.Errorf("project file name conflict: %q and %q", existingProject, project)
+			}
+			if name := profileNameFromURL(existing.URL); name != "" {
+				existing.Name = name
+			}
+			if existing.Name != "" && existing.Name != p.Name && existingProject == project {
+				p = mergeProjectCatalogs(existing, p)
+			}
+		} else if !os.IsNotExist(err) {
+			return err
 		}
 	}
 	if p.Headers == nil {
@@ -136,7 +207,7 @@ func (a *App) saveProfileFile(p Profile) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return atomicWriteFile(path, data, 0o644)
 }
 
 func (a *App) loadProfiles() ([]Profile, error) {
@@ -155,10 +226,12 @@ func (a *App) loadProfiles() ([]Profile, error) {
 		}
 		raw, err := os.ReadFile(filepath.Join(a.serversDir(), e.Name()))
 		if err != nil {
+			a.profileWarnings = append(a.profileWarnings, fmt.Sprintf("%s 读取失败: %v", e.Name(), err))
 			continue
 		}
 		var p Profile
 		if err := json.Unmarshal(raw, &p); err != nil {
+			a.profileWarnings = append(a.profileWarnings, fmt.Sprintf("%s 格式错误: %v", e.Name(), err))
 			continue
 		}
 		if name := profileNameFromURL(p.URL); name != "" {
@@ -195,13 +268,11 @@ func (a *App) migrateLegacyNamedProfiles() error {
 		if err := json.Unmarshal(raw, &p); err != nil {
 			continue
 		}
-		name := profileNameFromURL(p.URL)
-		if name == "" {
-			continue
+		if name := profileNameFromURL(p.URL); name != "" {
+			p.Name = name
 		}
-		p.Name = name
 		want := profileStorageFileName(p)
-		if strings.EqualFold(e.Name(), want) && p.Name == name {
+		if strings.EqualFold(e.Name(), want) {
 			continue
 		}
 		if err := a.saveProfileFile(p); err != nil {

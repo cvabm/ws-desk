@@ -46,6 +46,10 @@ export function GetPaths() {
   return window['go']['main']['App']['GetPaths']();
 }
 
+export function GetProfileLoadError() {
+  return window['go']['main']['App']['GetProfileLoadError']();
+}
+
 export function GetProfiles() {
   return window['go']['main']['App']['GetProfiles']();
 }

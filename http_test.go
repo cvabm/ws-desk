@@ -67,6 +67,29 @@ func TestDoHTTPSuccess(t *testing.T) {
 	}
 }
 
+func TestDoHTTPDeleteAndOptionsSendBodies(t *testing.T) {
+	for _, method := range []string{http.MethodDelete, http.MethodOptions} {
+		t.Run(method, func(t *testing.T) {
+			var received string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				receivedBytes, _ := io.ReadAll(r.Body)
+				received = string(receivedBytes)
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			t.Cleanup(srv.Close)
+
+			c := newWSClient(NewApp())
+			ex, err := c.doHTTP(ConnectOptions{URL: srv.URL, Method: method}, newHTTPDoer(), `{"id":1}`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ex.Error != "" || received != `{"id":1}` {
+				t.Fatalf("exchange error %q, body = %q", ex.Error, received)
+			}
+		})
+	}
+}
+
 func TestHTTPDoerAcceptsSelfSigned(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "ok")

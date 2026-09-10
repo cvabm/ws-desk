@@ -108,7 +108,7 @@ func normalizeHTTPMethod(method, body string) string {
 
 func methodOmitsBody(method string) bool {
 	switch strings.ToUpper(method) {
-	case http.MethodGet, http.MethodHead, http.MethodDelete, http.MethodOptions:
+	case http.MethodGet, http.MethodHead:
 		return true
 	default:
 		return false

@@ -5,6 +5,7 @@ import {
   Send,
   RequestHTTP,
   GetProfiles,
+  GetProfileLoadError,
   GetStatus,
   GetMessages,
   ClearMessages,
@@ -34,6 +35,8 @@ import {
   rowsFromMap,
   parseQuery,
   applyQuery,
+  requestDefinitionURL,
+  requestURLForEnvironment,
   formEncode,
   parseForm,
   mergeRequestHeaders,
@@ -262,6 +265,7 @@ let syncingQuery = false;
 let sending = false;
 let moduleRun = null;
 let persistTimer = 0;
+let profileSaveQueue = Promise.resolve();
 let suppressSessionReset = false;
 let activeProfileName = '';
 let urlPrefix = '';
@@ -270,6 +274,13 @@ let lastHostVarURL = '';
 function schedulePersist() {
   clearTimeout(persistTimer);
   persistTimer = setTimeout(() => persistProfile(), 400);
+}
+
+function queueProfileSave(profile) {
+  const snapshot = JSON.parse(JSON.stringify(profile));
+  const operation = profileSaveQueue.then(() => SaveProfile(snapshot));
+  profileSaveQueue = operation.catch(() => {});
+  return operation;
 }
 
 function dirLabel(dir) {
@@ -676,6 +687,23 @@ function isHTTPMode() {
   return HTTP_SCHEMES.has(currentScheme());
 }
 
+function activeEnvironmentScheme() {
+  const scheme = urlScheme(activeEnvironmentURL());
+  return ALL_SCHEMES.has(scheme) ? scheme : '';
+}
+
+function isDefinitionHTTPMode() {
+  if (!isDocMode()) return isHTTPMode();
+  // The selected environment decides the transport. A previously selected
+  // HTTP item must not keep HTTP controls visible after switching to WS/WSS.
+  const environmentScheme = activeEnvironmentScheme();
+  if (environmentScheme) return HTTP_SCHEMES.has(environmentScheme);
+  const selected = currentSavedRequest();
+  if (selected) return isHTTPSaved(selected);
+  const scheme = currentScheme();
+  return scheme ? HTTP_SCHEMES.has(scheme) : true;
+}
+
 function eventProfileName(v) {
   return String(v || '').trim();
 }
@@ -721,7 +749,15 @@ function withoutSessionReset(fn) {
 }
 
 function applyTransportFromURL() {
-  applyTransportUI(currentScheme());
+  let scheme = activeEnvironmentScheme() || currentScheme();
+  if (isDocMode()) {
+    const selected = currentSavedRequest();
+    if (!activeEnvironmentScheme()) {
+      scheme = selected ? (isHTTPSaved(selected) ? 'http' : 'ws') : (scheme || 'http');
+    }
+  }
+  if (ALL_SCHEMES.has(scheme)) applyTransportUI(scheme);
+  else applyWorkMode();
 }
 
 function placePayload(http) {
@@ -756,14 +792,25 @@ function placeDocRequestEditor(http) {
   config.classList.toggle('http-config', editing && http);
   config.classList.toggle('ws-config', editing && !http);
   el.docReqCol?.classList.toggle('hidden', editing && http);
+  el.urlWrap?.classList.remove('hidden');
 
   if (editing) {
     if (el.urlWrap) config.appendChild(el.urlWrap);
     if (el.protocol) config.appendChild(el.protocol);
     if (el.method) config.appendChild(el.method);
     if (el.redirectWrap) config.appendChild(el.redirectWrap);
-    if (http && el.reqBuilder) config.appendChild(el.reqBuilder);
-    if (http) placePayload(true);
+    if (http) {
+      if (el.reqBuilder) config.appendChild(el.reqBuilder);
+      placePayload(true);
+    } else {
+      // HTTP's params/headers/auth/body builder is moved into docConfig while
+      // editing. Move it and its payload back out when the environment becomes
+      // WS/WSS, otherwise both the stale HTTP builder and WS request body show.
+      if (el.reqBuilder && el.reqPane && el.reqBuilder.parentElement !== el.reqPane) {
+        el.reqPane.appendChild(el.reqBuilder);
+      }
+      placePayload(false);
+    }
     return;
   }
 
@@ -806,7 +853,7 @@ function setDocEditing(on) {
 
 function applyDocEditing() {
   const editing = isDocMode() && docEditing();
-  const locked = isDocMode() && !docEditing();
+  const locked = !editing;
   el.app?.classList.toggle('doc-editing', editing);
   if (el.btnDocEdit) {
     el.btnDocEdit.setAttribute('aria-checked', editing ? 'true' : 'false');
@@ -834,7 +881,7 @@ function applyDocEditing() {
     closeModuleMenu();
     paintDocViews(currentSavedRequest());
   }
-  placeDocRequestEditor(isHTTPMode());
+  placeDocRequestEditor(isDefinitionHTTPMode());
 }
 
 function syncDocMetaEmpty() {
@@ -852,17 +899,29 @@ function readWorkMode() {
   return 'doc';
 }
 
-function setWorkMode(mode) {
+async function setWorkMode(mode) {
   const next = mode === 'debug' ? 'debug' : 'doc';
-  if (next === 'doc' && workMode === 'debug' && activeSavedId) {
-    syncActiveRequestSnapshot();
-  } else if (next === 'debug' && workMode === 'doc' && activeSavedId) {
+  const previous = workMode;
+  if (next === previous) return;
+  if (next === 'debug' && previous === 'doc' && activeSavedId) {
     flushDocEditors();
+    flushReqMeta();
+    syncActiveRequestSnapshot();
+    // 离开文档模式前保存文档草稿；进入调试后不再同步接口定义。
+    await persistProfile('', { syncRequest: false });
   }
   workMode = next;
   localStorage.setItem(MODE_KEY, workMode);
+  if (next === 'doc' && previous === 'debug') {
+    const req = currentSavedRequest();
+    if (req) {
+      if (isHTTPSaved(req)) applySavedRequest(req);
+      else applySavedWSMessage(req);
+    }
+  }
   if (historyMode) {
-    exitHistoryMode().then(() => applyWorkMode());
+    await exitHistoryMode();
+    applyWorkMode();
     return;
   }
   applyWorkMode();
@@ -870,7 +929,7 @@ function setWorkMode(mode) {
 
 function applyWorkMode() {
   const doc = isDocMode();
-  const http = isHTTPMode();
+  const http = isDefinitionHTTPMode();
   el.app?.classList.toggle('doc-mode', doc);
   el.btnModeDoc?.classList.toggle('on', workMode === 'doc');
   el.btnModeDebug?.classList.toggle('on', workMode === 'debug');
@@ -948,8 +1007,16 @@ function renderDocAuth(req) {
 
 function renderDocPane({ reloadEditors = false } = {}) {
   if (!el.docBody || !el.docEmpty) return;
+  if (!activeEnvironmentURL()) {
+    el.docEmpty.textContent = '请先新增环境，再新建接口。';
+    el.docEmpty.classList.remove('hidden');
+    el.docBody.classList.add('hidden');
+    fillDocEditors(null);
+    return;
+  }
   const req = currentSavedRequest();
   if (!req) {
+    el.docEmpty.textContent = '从左侧选择一个接口，查看说明、请求和返回示例。';
     el.docEmpty.classList.remove('hidden');
     el.docBody.classList.add('hidden');
     fillDocEditors(null);
@@ -1114,19 +1181,34 @@ function originFromURL(url) {
 
 function splitLockedURL(url, lockName) {
   const raw = String(url || '').trim();
+  const lockedURL = String(lockName || '').trim();
+  let lockedPrefix = '';
+  if (connectionURLReady(lockedURL)) {
+    try {
+      const locked = new URL(lockedURL);
+      const path = String(locked.pathname || '').replace(/\/+$/, '');
+      lockedPrefix = `${locked.protocol}//${locked.host}${path && path !== '/' ? path : ''}`;
+    } catch (_) {}
+  }
   if (!raw) {
-    const name = String(lockName || '').trim();
+    const name = lockedPrefix || lockedURL;
     return { prefix: name, rest: '' };
   }
-  let prefix = originFromURL(raw);
+  let prefix = lockedPrefix || originFromURL(raw);
   if (!prefix) {
     const name = String(lockName || currentProfile()?.name || profileNameFromURL(raw) || '').trim();
     if (name && raw.slice(0, name.length).toLowerCase() === name.toLowerCase()) prefix = name;
   }
   if (!prefix) return { prefix: '', rest: raw };
   let rest = raw;
-  if (rest.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase()) {
+  const prefixMatch = rest.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase();
+  const boundary = rest.length === prefix.length || ['/','?','#'].includes(rest[prefix.length]);
+  if (prefixMatch && boundary) {
     rest = rest.slice(prefix.length);
+  } else if (lockedPrefix && !urlScheme(rest)) {
+    rest = rest.startsWith('/') || rest.startsWith('?') || rest.startsWith('#')
+      ? rest
+      : `/${rest}`;
   } else {
     try {
       const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `ws://${raw.replace(/^\/\//, '')}`;
@@ -1174,9 +1256,9 @@ function normalizeURLPathInput() {
     return;
   }
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t)) {
-    const origin = originFromURL(t);
-    if (origin && origin.toLowerCase() === urlPrefix.toLowerCase()) {
-      el.url.value = splitLockedURL(t).rest;
+    const split = splitLockedURL(t, urlPrefix);
+    if (split.prefix && split.prefix.toLowerCase() === urlPrefix.toLowerCase()) {
+      el.url.value = split.rest;
       return;
     }
     try {
@@ -1235,7 +1317,7 @@ function onParamsChange() {
   if (!urlScheme(url)) return;
   syncingQuery = true;
   const next = applyQuery(url, paramRows);
-  if (next) setURL(next);
+  if (next) setURL(next, activeEnvironmentURL() || urlPrefix);
   syncingQuery = false;
   schedulePersist();
 }
@@ -1408,7 +1490,13 @@ function renderEnvSelect() {
 }
 
 function applyEnv(name) {
-  flushActiveEnv();
+  // Save only the environment that was actually active. When the project had
+  // no environment, flushActiveEnv() would select the newly appended one and
+  // overwrite its fresh BASE_URL with the previous empty editor state.
+  const previousEnv = findEnv(activeEnv);
+  if (previousEnv) {
+    previousEnv.variables = ensureHostVarRows(varRows, currentURL());
+  }
   const env = findEnv(name);
   if (!env) return;
   const previousHostURL = lastHostVarURL;
@@ -1418,6 +1506,7 @@ function applyEnv(name) {
   renderRequestEditor();
   const hostURL = envConnectionURL(env);
   applyConnectionURL(hostURL, previousHostURL);
+  alignActiveRequestToEnvironment();
 }
 
 async function onEnvSelectChange() {
@@ -1444,9 +1533,20 @@ function envNameFromURL(url) {
 }
 
 function findEnvByHostURL(url) {
-  const want = profileNameFromURL(url);
+  const want = normalizedEnvironmentURL(url);
   if (!want) return null;
-  return environments.find((e) => profileNameFromURL(envConnectionURL(e)) === want) || null;
+  return environments.find((e) => normalizedEnvironmentURL(envConnectionURL(e)) === want) || null;
+}
+
+function normalizedEnvironmentURL(value) {
+  try {
+    const parsed = new URL(String(value || '').trim());
+    if (!ALL_SCHEMES.has(parsed.protocol.replace(':', '').toLowerCase()) || !parsed.hostname) return '';
+    parsed.pathname = parsed.pathname.replace(/\/+$/, '') || '/';
+    return parsed.toString();
+  } catch {
+    return '';
+  }
 }
 
 function addEnvFromURL(url) {
@@ -1527,19 +1627,37 @@ async function renameEnvironment() {
 
 async function deleteEnvironment() {
   const name = activeEnv;
+  if (!name) return;
   const ok = await askConfirm({
     title: '删除环境',
     message: `确定删除环境「${name}」？其中的变量会一起删掉。`,
     okText: '删除',
   });
   if (!ok) return;
+  const previousHostURL = envConnectionURL(findEnv(name));
+  if (!isHTTPMode()) await Disconnect();
   environments = environments.filter((e) => e.name !== name);
   const next = environments[0] || null;
   activeEnv = next?.name || '';
   varRows = next ? envRowsOf(next) : [];
   renderEnvSelect();
   renderRequestEditor();
-  await persistProfile();
+  if (next) {
+    const nextHostURL = envConnectionURL(next);
+    if (!applyConnectionURL(nextHostURL, previousHostURL)) clearConnectionURL();
+  } else {
+    clearConnectionURL();
+    const profile = currentProfile();
+    if (profile) profile.url = '';
+  }
+  // 删除环境只改变运行地址和环境集合，不能把旧地址写回当前接口。
+  await persistProfile('', { syncRequest: false });
+  if (next) {
+    await activateCurrent();
+    await reloadLiveSession();
+  } else {
+    setState({ state: 'idle', kind: '', url: '', protocol: '', method: '', session: '', msgCount: 0 });
+  }
 }
 
 function envEditOpen() {
@@ -2036,7 +2154,7 @@ async function createProject() {
     modules: [],
   };
   try {
-    await SaveProfile(profile);
+    await queueProfileSave(profile);
     profiles = (await GetProfiles()) || [];
     const saved = profiles.find((p) => String(p.project || '').trim() === project) || profile;
     await applyProfile(saved);
@@ -2071,7 +2189,7 @@ async function renameCurrentProject() {
   if (!members.length) return;
   try {
     for (const profile of members) {
-      await SaveProfile({ ...profile, project: nextName });
+      await queueProfileSave({ ...profile, project: nextName });
     }
     profiles = (await GetProfiles()) || [];
     const selected = profiles.find((p) => p.name === activeProfileName)
@@ -2089,7 +2207,7 @@ async function deleteCurrentProject() {
   if (!project || !members.length) return;
   const ok = await askConfirm({
     title: '删除项目',
-    message: `确定删除项目“${project}”吗？这会删除其 ${members.length} 个地址、全部接口和环境，且不可恢复。`,
+    message: `确定删除项目“${project}”吗？这会删除其全部接口和 ${members.reduce((n, p) => n + (p.environments || []).length, 0)} 个环境，且不可恢复。`,
     okText: '删除项目',
   });
   if (!ok) return;
@@ -2105,6 +2223,7 @@ async function deleteCurrentProject() {
     } else {
       clearEditor();
       renderProjectSelect();
+      await createProject();
     }
   } catch (e) {
     setDetailEmpty('删除项目失败: ' + e);
@@ -2123,15 +2242,12 @@ function envConnectionURL(env) {
 
 function connectionURLReady(url) {
   const raw = String(url || '').trim();
-  const name = profileNameFromURL(raw);
-  if (!raw || !name) return false;
-  const host = hostFromURL(raw);
-  if (!host) return false;
-  if (host === 'localhost') return true;
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return true;
-  if (/^[a-f0-9:]+$/i.test(host) && host.includes(':')) return true;
-  if (/[a-z]/i.test(host) && host.includes('.')) return true;
-  return false;
+  if (!raw || !ALL_SCHEMES.has(urlScheme(raw))) return false;
+  try {
+    return Boolean(new URL(raw).hostname);
+  } catch {
+    return false;
+  }
 }
 
 function environmentURLWithRequestPath(environmentURL, requestURL, previousEnvironmentURL) {
@@ -2161,14 +2277,59 @@ function environmentURLWithRequestPath(environmentURL, requestURL, previousEnvir
   }
 }
 
+function environmentURLForStoredRequest(requestURL) {
+  const raw = String(requestURL || '').trim();
+  let request;
+  try {
+    request = new URL(raw);
+  } catch {
+    return '';
+  }
+  let best = '';
+  let bestPathLength = -1;
+  for (const env of environments) {
+    const candidate = envConnectionURL(env);
+    try {
+      const base = new URL(candidate);
+      const basePath = String(base.pathname || '').replace(/\/+$/, '');
+      const requestPath = request.pathname || '/';
+      if (request.origin !== base.origin) continue;
+      if (basePath && basePath !== '/' && requestPath !== basePath && !requestPath.startsWith(`${basePath}/`)) continue;
+      if (basePath.length > bestPathLength) {
+        best = candidate;
+        bestPathLength = basePath.length;
+      }
+    } catch {
+      /* ignore invalid legacy environment URL */
+    }
+  }
+  return best;
+}
+
+function storedRequestDefinitionURL(requestURL) {
+  return requestDefinitionURL(requestURL, environmentURLForStoredRequest(requestURL));
+}
+
+function activeEnvironmentURL() {
+  return envConnectionURL(findEnv(activeEnv));
+}
+
+function runtimeURLForSavedRequest(requestURL) {
+  const definition = storedRequestDefinitionURL(requestURL);
+  const environmentURL = activeEnvironmentURL();
+  return environmentURL ? requestURLForEnvironment(definition, environmentURL) : String(requestURL || '').trim();
+}
+
 function applyConnectionURL(url, previousEnvironmentURL = lastHostVarURL) {
   const raw = String(url || '').trim();
   if (!connectionURLReady(raw)) return false;
   const nextHost = profileNameFromURL(raw);
-  const nextURL = environmentURLWithRequestPath(raw, currentURL(), previousEnvironmentURL);
+  const nextURL = isDefinitionHTTPMode()
+    ? environmentURLWithRequestPath(raw, currentURL(), previousEnvironmentURL)
+    : raw;
   lastHostVarURL = raw;
   if (currentURL() === nextURL && (profileNameFromURL(currentURL()) || activeProfileName) === nextHost) return false;
-  setURL(nextURL, nextHost);
+  setURL(nextURL, raw);
   applyTransportFromURL();
   syncParamsFromURL();
   return true;
@@ -2271,7 +2432,7 @@ function renderProjectSelect() {
   fillSelect(el.project, projects, curProject);
   if (el.project) el.project.disabled = projects.length === 0;
   renderBarEnvSelect();
-  if (el.btnDelProfile) el.btnDelProfile.disabled = profiles.length === 0;
+  if (el.btnDelProfile) el.btnDelProfile.disabled = environments.length === 0;
 }
 
 async function selectProject(name) {
@@ -2313,11 +2474,12 @@ async function selectEnvironment(name) {
 
 async function applyProfile(p, keepHint) {
   if (!p) return;
+  const previousSavedId = activeSavedId;
   if (!Array.isArray(p.modules)) p.modules = [];
   if (!Array.isArray(p.requests)) p.requests = [];
   if (!Array.isArray(p.environments)) p.environments = [];
   activeProfileName = p.name || profileNameFromURL(p.url || p.name) || '';
-  setURL(p.url || '', p.name);
+  setURL(p.url || '', p.url ? p.name : '');
   el.protocol.value = p.protocol || '';
   const method = (p.method || 'GET').toUpperCase();
   if (el.method && [...el.method.options].some((o) => o.value === method)) {
@@ -2341,7 +2503,19 @@ async function applyProfile(p, keepHint) {
   rememberSelection();
   if (keepHint) restoreRequestFromHint(keepHint);
   else {
-    setActiveSavedId(isHTTPMode() ? matchSavedId() : matchSavedWSId());
+    activeSavedId = '';
+    let nextId = p.requests.some((r) => r.id === previousSavedId) ? previousSavedId : '';
+    if (!nextId) nextId = isHTTPMode() ? matchSavedId() : matchSavedWSId();
+    if (!nextId) {
+      const sameTransport = p.requests.find((r) => isHTTPMode() ? isHTTPSaved(r) : isWSSaved(r));
+      nextId = sameTransport?.id || p.requests[0]?.id || '';
+    }
+    setActiveSavedId(nextId);
+    const selected = currentSavedRequest();
+    if (selected) {
+      if (isHTTPSaved(selected)) applySavedRequest(selected);
+      else applySavedWSMessage(selected);
+    }
     loadReqMeta(currentSavedRequest());
   }
   renderCatalog();
@@ -2381,6 +2555,7 @@ let confirmResolver = null;
 let promptResolver = null;
 let promptValidate = null;
 let activeSavedId = '';
+let pendingCatalogAdd = null;
 const catalogOpenGroups = new Set();
 
 function confirmModalOpen() {
@@ -2495,6 +2670,7 @@ async function deleteCurrentProfile() {
 
 async function loadProfiles() {
   profiles = (await GetProfiles()) || [];
+  const loadWarning = await GetProfileLoadError();
   if (profiles.length) {
     const sel = readSel();
     let cur = null;
@@ -2507,10 +2683,12 @@ async function loadProfiles() {
     await applyProfile(cur || profiles[0]);
     const env = lastEnvForProject(currentProjectName());
     if (env && activeEnv !== env) applyEnv(env);
+    if (loadWarning) setDetailEmpty(`部分项目数据未能读取：\n${loadWarning}`);
   } else {
     renderProjectSelect();
     clearEditor();
-    createProject();
+    if (loadWarning) setDetailEmpty(`项目数据读取失败，原文件未被修改：\n${loadWarning}`);
+    else createProject();
   }
 }
 
@@ -2523,23 +2701,22 @@ function setUrlModalError(text) {
 }
 
 function normalizeDialURL(raw) {
-  const t = String(raw || '').trim();
-  if (!t) return '';
-  if (urlScheme(t)) return t;
-  return `ws://${t.replace(/^\/\//, '')}`;
+  return String(raw || '').trim();
 }
 
 function validateNewURL(raw) {
   const t = String(raw || '').trim();
   if (!t) return '请输入 URL';
   const scheme = urlScheme(t);
-  if (scheme && !ALL_SCHEMES.has(scheme)) return '仅支持 ws、wss、http、https';
+  if (!scheme) return '请输入完整 URL（需包含 http://、https://、ws:// 或 wss://）';
+  if (!ALL_SCHEMES.has(scheme)) return '仅支持 ws、wss、http、https';
   const url = normalizeDialURL(t);
-  if (!hostFromURL(url) || !profileNameFromURL(url)) return '请输入有效的主机（IP 或域名）';
+  if (!connectionURLReady(url)) return '请输入有效的完整 URL';
   return '';
 }
 
-function openUrlModal() {
+function openUrlModal({ createRequest = false, moduleName = '' } = {}) {
+  pendingCatalogAdd = createRequest ? { moduleName: clipText(moduleName, 80) } : null;
   if (el.urlModalTitle) el.urlModalTitle.textContent = '新增环境';
   if (el.urlModalInput) el.urlModalInput.value = '';
   setUrlModalError('');
@@ -2553,6 +2730,7 @@ function closeUrlModal() {
   el.urlModal.classList.add('hidden');
   el.urlModal.setAttribute('aria-hidden', 'true');
   setUrlModalError('');
+  pendingCatalogAdd = null;
 }
 
 function urlModalHasDraft() {
@@ -2569,41 +2747,27 @@ async function submitUrlModal() {
   }
   const url = normalizeDialURL(raw);
   const name = profileNameFromURL(url);
-  const existing = name ? profiles.find((p) => p.name === name) : null;
   const inheritProject = isExplicitProject(currentProjectName()) ? currentProjectName() : '';
+  const pendingAdd = pendingCatalogAdd;
   closeUrlModal();
-  if (inheritProject && !existing) {
+  if (inheritProject) {
     const owner = projectCatalogProfile(inheritProject) || currentProfile();
     if (owner) {
       if (currentProfile()?.name !== owner.name) {
         await persistProfile();
         await applyProfile(owner);
       }
-      if (!String(owner.url || '').trim()) {
-        setURL(url, name);
-        applyTransportFromURL();
-        syncParamsFromURL();
-        addEnvFromURL(url);
-        await persistProfile();
-        profiles = (await GetProfiles()) || [];
-        const saved = profiles.find((p) => String(p.project || '').trim() === inheritProject);
-        if (saved) await applyProfile(saved);
-        return;
-      }
       addEnvFromURL(url);
-      // 新环境只替换执行时的地址前缀，不能把该地址写回接口定义。
+      // 新环境只替换执行时的地址前缀，不能把该地址写回接口定义，
+      // 也无需重新加载项目而清掉当前接口选中状态。
       await persistProfile('', { syncRequest: false });
+      if (pendingAdd) await addCatalogRequest(pendingAdd.moduleName);
       return;
     }
   }
   const prevName = profileNameFromURL(currentURL());
   if (prevName && prevName !== name) {
     await persistProfile();
-  }
-  if (existing) {
-    await applyProfile({ ...existing, url });
-    await persistProfile();
-    return;
   }
   clearTimeout(persistTimer);
   clearEditor();
@@ -2614,6 +2778,7 @@ async function submitUrlModal() {
   renderRequestEditor();
   await persistProfile();
   await activateCurrent();
+  if (pendingAdd) await addCatalogRequest(pendingAdd.moduleName);
 }
 
 function currentHeaders() {
@@ -2649,7 +2814,7 @@ function currentCurlSpec() {
     method: opts.method,
     url: opts.url,
     headers: opts.headers,
-    body: isHTTPMode() ? resolvedBody() : '',
+    body: isDefinitionHTTPMode() ? resolvedBody() : '',
     followRedirects: curlFollowRedirects(),
   };
 }
@@ -2750,6 +2915,22 @@ function currentHTTPRequests() {
 
 function currentWSMessages() {
   return currentProfileRequests().filter(isWSSaved);
+}
+
+function alignActiveRequestToEnvironment() {
+  const selected = currentSavedRequest();
+  const http = isDefinitionHTTPMode();
+  if (selected && isHTTPSaved(selected) === http) return;
+
+  const next = (http ? currentHTTPRequests() : currentWSMessages())[0] || null;
+  activeSavedId = next?.id || '';
+  if (next) {
+    if (http) applySavedRequest(next);
+    else applySavedWSMessage(next);
+  }
+  setActiveSavedId(activeSavedId);
+  loadReqMeta(next);
+  renderCatalog();
 }
 
 function scalarMessageName(v) {
@@ -2861,7 +3042,7 @@ function flushReqMeta() {
 
 function rematchSavedFromEditor() {
   if (activeSavedId && currentSavedRequest()) return;
-  const id = isHTTPMode() ? matchSavedId() : matchSavedWSId();
+  const id = isDefinitionHTTPMode() ? matchSavedId() : matchSavedWSId();
   if (id === activeSavedId) return;
   flushReqMeta();
   activeSavedId = id || '';
@@ -2870,7 +3051,7 @@ function rematchSavedFromEditor() {
 }
 
 function onReqMetaInput() {
-  if (isDocMode() && !docEditing()) return;
+  if (!isDocMode() || !docEditing()) return;
   const req = currentSavedRequest();
   if (req) {
     req.title = currentReqTitle();
@@ -2896,7 +3077,7 @@ function setCatalogOpen(on) {
 }
 
 function catalogRequests() {
-  return isHTTPMode() ? currentHTTPRequests() : currentWSMessages();
+  return isDefinitionHTTPMode() ? currentHTTPRequests() : currentWSMessages();
 }
 
 function requestModuleName(r) {
@@ -3040,7 +3221,7 @@ function renderModuleMenu() {
 
 function openModuleMenu() {
   if (!el.moduleMenu || historyMode) return;
-  if (isDocMode() && !docEditing()) return;
+  if (!isDocMode() || !docEditing()) return;
   if (confirmModalOpen() || urlModalOpen() || recordModalOpen() || promptModalOpen()) return;
   renderModuleMenu();
   el.moduleMenu.classList.remove('hidden');
@@ -3154,7 +3335,7 @@ function makeCatalogGroupHead(group, kw) {
   head.className = 'catalog-group';
   head.dataset.module = group.module;
   head.dataset.closeKey = group.module || '';
-  if (!kw && group.module) head.draggable = true;
+  if (isDocMode() && !kw && group.module) head.draggable = true;
   const closed = !kw && !catalogOpenGroups.has(group.module || '');
   const caret = document.createElement('span');
   caret.className = 'catalog-caret';
@@ -3277,11 +3458,11 @@ function openCatalogMenu(anchor, key, items) {
 
 function openGroupMenu(anchor, module) {
   if (!isDocMode()) {
-    if (isHTTPMode()) openCatalogMenu(anchor, `group\t${module}`, [{ act: 'run', label: '跑一遍' }]);
+    if (isDefinitionHTTPMode()) openCatalogMenu(anchor, `group\t${module}`, [{ act: 'run', label: '跑一遍' }]);
     return;
   }
   const items = [{ act: 'add', label: '新建接口' }];
-  if (isHTTPMode()) items.push({ act: 'run', label: '跑一遍' });
+  if (isDefinitionHTTPMode()) items.push({ act: 'run', label: '跑一遍' });
   if (module) {
     items.push({ act: 'rename', label: '重命名' });
     items.push({ act: 'delete', label: '删除模块', danger: true });
@@ -3354,7 +3535,7 @@ function renderCatalog() {
   if (!all.length && !groups.length) {
     const empty = document.createElement('div');
     empty.className = 'catalog-empty';
-    empty.textContent = isHTTPMode()
+    empty.textContent = isDefinitionHTTPMode()
       ? '点 + 新建接口，或发送后自动收录。可按模块分组。'
       : '点 + 新建发送，或发送后按 cmd 收录。可按模块分组。';
     el.catalogList.appendChild(empty);
@@ -3414,7 +3595,7 @@ function makeCatalogItem(r, kw, host) {
     + (moduleRun?.id === r.id ? ' running' : '');
   item.dataset.id = r.id;
   if (host) item.dataset.host = host;
-  if (!kw && r.id) item.draggable = true;
+  if (isDocMode() && !kw && r.id) item.draggable = true;
   item.appendChild(catalogIcon('catalog-kind catalog-kind-api', ICO_API));
   const main = document.createElement('div');
   main.className = 'catalog-item-main';
@@ -3691,7 +3872,7 @@ function moveRequestToModule(id, destModule, targetId, before) {
 
 function onCatalogDragStart(e) {
   hideCatalogTip();
-  if (moduleRun || catalogFilterKeyword() || e.target?.closest?.('.catalog-more, .catalog-add-module')) {
+  if (!isDocMode() || moduleRun || catalogFilterKeyword() || e.target?.closest?.('.catalog-more, .catalog-add-module')) {
     e.preventDefault();
     return;
   }
@@ -3719,7 +3900,7 @@ function onCatalogDragStart(e) {
 }
 
 function onCatalogDragOver(e) {
-  if (!catalogDrag || catalogFilterKeyword()) return;
+  if (!isDocMode() || !catalogDrag || catalogFilterKeyword()) return;
   e.preventDefault();
   e.dataTransfer.dropEffect = 'move';
   clearCatalogDropMarks();
@@ -3748,7 +3929,7 @@ function onCatalogDragOver(e) {
 }
 
 function onCatalogDrop(e) {
-  if (!catalogDrag || catalogFilterKeyword()) return;
+  if (!isDocMode() || !catalogDrag || catalogFilterKeyword()) return;
   e.preventDefault();
   const dest = catalogDropTarget();
   let changed = false;
@@ -3842,7 +4023,6 @@ async function pickCatalogRequest(id, host) {
 }
 
 function blankHTTPRequest(id, moduleName) {
-  const origin = urlPrefix || originFromURL(currentURL()) || currentURL();
   return {
     id,
     name: 'GET /',
@@ -3851,7 +4031,7 @@ function blankHTTPRequest(id, moduleName) {
     module: clipText(moduleName, 80),
     updatedAt: Date.now(),
     kind: 'http',
-    url: origin,
+    url: '/',
     method: 'GET',
     protocol: '',
     headerList: [emptyRow()],
@@ -3874,7 +4054,7 @@ function blankWSRequest(id, moduleName) {
     module: clipText(moduleName, 80),
     updatedAt: Date.now(),
     kind: 'ws',
-    url: currentURL(),
+    url: '',
     protocol: el.protocol?.value?.trim() || '',
     body: '',
   };
@@ -3890,23 +4070,31 @@ function wsNameFromEditor(prev) {
 function syncActiveRequestSnapshot() {
   const req = currentSavedRequest();
   if (!req) return;
-  const next = isHTTPMode()
+  const next = isDefinitionHTTPMode()
     ? snapshotCurrentRequest(currentRequestKey() || req.name || 'GET /', req.id)
     : snapshotWSMessage(wsNameFromEditor(req), req.id);
   Object.assign(req, next);
 }
 
 async function addCatalogRequest(moduleName) {
-  if (!requireURL()) return;
-  if (activeSavedId) syncActiveRequestSnapshot();
+  if (!activeEnvironmentURL()) {
+    openUrlModal({ createRequest: true, moduleName });
+    return;
+  }
+  const selected = currentSavedRequest();
+  if (selected && isHTTPSaved(selected) === isDefinitionHTTPMode()) {
+    syncActiveRequestSnapshot();
+  } else {
+    activeSavedId = '';
+  }
   const p = ensureCurrentProfile();
   if (!p) return;
   const module = clipText(moduleName, 80);
   if (module) rememberModule(module);
   const id = newRequestId();
-  const req = isHTTPMode() ? blankHTTPRequest(id, module) : blankWSRequest(id, module);
+  const req = isDefinitionHTTPMode() ? blankHTTPRequest(id, module) : blankWSRequest(id, module);
   p.requests = (p.requests || []).concat(req);
-  if (isHTTPMode()) applySavedRequest(req);
+  if (isDefinitionHTTPMode()) applySavedRequest(req);
   else applySavedWSMessage(req);
   setActiveSavedId(id);
   renderCatalog();
@@ -3919,13 +4107,12 @@ function cloneSavedRequest(src) {
   const copy = JSON.parse(JSON.stringify(src || {}));
   copy.id = newRequestId();
   copy.updatedAt = Date.now();
-  const base = String(src?.title || requestDisplayTitle(src) || src?.name || (isHTTPMode() ? '接口' : '消息')).trim();
+  const base = String(src?.title || requestDisplayTitle(src) || src?.name || (isDefinitionHTTPMode() ? '接口' : '消息')).trim();
   copy.title = clipText(`${base} 副本`, 80);
   return copy;
 }
 
 async function duplicateCatalogRequest(id) {
-  if (!requireURL()) return;
   if (activeSavedId) syncActiveRequestSnapshot();
   const p = ensureCurrentProfile();
   if (!p) return;
@@ -3933,7 +4120,7 @@ async function duplicateCatalogRequest(id) {
   if (i < 0) return;
   const copy = cloneSavedRequest(p.requests[i]);
   p.requests.splice(i + 1, 0, copy);
-  if (isHTTPMode()) applySavedRequest(copy);
+  if (isHTTPSaved(copy)) applySavedRequest(copy);
   else applySavedWSMessage(copy);
   setActiveSavedId(copy.id);
   renderCatalog();
@@ -3943,7 +4130,6 @@ async function duplicateCatalogRequest(id) {
 }
 
 async function addCatalogModule() {
-  if (!requireURL()) return;
   const raw = await askPrompt({
     title: '新建模块',
     placeholder: '例如 登录',
@@ -4004,7 +4190,7 @@ async function deleteCatalogModule(name) {
 }
 
 async function saveCurrentRequest() {
-  if (!requireURL()) return;
+  if (!isDocMode()) return;
   flushDocEditors();
   const p = ensureCurrentProfile();
   if (!p) return;
@@ -4017,7 +4203,7 @@ async function saveCurrentRequest() {
   const module = currentReqModule();
   if (module) rememberModule(module);
   await persistProfile();
-  if (!isDocMode()) flashButton(isHTTPMode() ? el.btnSaveReq : el.btnSaveWS, '已保存');
+  if (!isDocMode()) flashButton(isDefinitionHTTPMode() ? el.btnSaveReq : el.btnSaveWS, '已保存');
   setActiveSavedId(activeSavedId);
   loadReqMeta(currentSavedRequest());
   renderCatalog();
@@ -4119,7 +4305,7 @@ function restoreRequestFromHint(hint) {
 
 function setActiveSavedId(id) {
   if (id !== undefined) activeSavedId = id || '';
-  const reqs = isHTTPMode() ? currentHTTPRequests() : currentWSMessages();
+  const reqs = isDefinitionHTTPMode() ? currentHTTPRequests() : currentWSMessages();
   if (activeSavedId && !reqs.some((r) => r.id === activeSavedId)) activeSavedId = '';
   if (isDocMode()) renderDocPane();
   return activeSavedId;
@@ -4139,15 +4325,15 @@ function urlPathname(url) {
 function requestKeyFrom(req) {
   const url = req?.url || '';
   const path = urlPathname(url);
-  if (HTTP_SCHEMES.has(urlScheme(url))) {
+  if (isHTTPSaved(req)) {
     return `${String(req?.method || 'GET').toUpperCase()} ${path}`;
   }
   return path;
 }
 
 function currentRequestKey() {
-  const path = urlPathname(currentURL());
-  if (isHTTPMode()) return `${(el.method?.value || 'GET').toUpperCase()} ${path}`;
+  const path = urlPathname(requestDefinitionURL(currentURL(), activeEnvironmentURL()));
+  if (isDefinitionHTTPMode()) return `${(el.method?.value || 'GET').toUpperCase()} ${path}`;
   return path;
 }
 
@@ -4179,7 +4365,7 @@ function snapshotCurrentRequest(name, id, extra) {
     module: currentReqModule() || prev?.module || '',
     updatedAt: Date.now(),
     kind: 'http',
-    url: currentURL(),
+    url: requestDefinitionURL(currentURL(), activeEnvironmentURL()),
     method: el.method?.value || 'GET',
     protocol: el.protocol?.value?.trim() || '',
     headerList: cloneRows(headerRows),
@@ -4204,7 +4390,7 @@ function snapshotWSMessage(name, id, extra) {
     module: currentReqModule() || prev?.module || '',
     updatedAt: Date.now(),
     kind: 'ws',
-    url: currentURL(),
+    url: '',
     protocol: el.protocol?.value?.trim() || '',
     body: extra?.body !== undefined ? extra.body : (el.payload?.value || ''),
     example: extra?.example !== undefined ? extra.example : currentExample(prev),
@@ -4219,20 +4405,9 @@ function currentExample(prev) {
 function applySavedRequest(req) {
   if (!req) return false;
   recordDraft.resBody = req.example || '';
-  const lock = profileNameFromURL(currentURL()) || activeProfileName || '';
-  const raw = String(req.url || '').trim();
-  if (raw.includes('{{')) {
-    const rest = splitLockedURL(expandVars(raw, varsFromRows(varRows)) || '').rest;
-    if (lock && rest) setURL(lock + rest, lock);
-  } else {
-    const reqHost = profileNameFromURL(raw);
-    if (lock && reqHost && reqHost !== lock) {
-      const rest = splitLockedURL(raw).rest;
-      setURL(rest ? lock + rest : lock, lock);
-    } else if (raw) {
-      setURL(raw, lock || reqHost);
-    }
-  }
+  const raw = runtimeURLForSavedRequest(req.url);
+  const lock = activeEnvironmentURL() || profileNameFromURL(raw) || activeProfileName || '';
+  if (raw) setURL(raw, lock);
   if (el.protocol) el.protocol.value = req.protocol || '';
   const method = (req.method || 'GET').toUpperCase();
   if (el.method && [...el.method.options].some((o) => o.value === method)) {
@@ -4253,11 +4428,18 @@ function applySavedRequest(req) {
 
 function applySavedWSMessage(req) {
   if (!req || !el.payload) return false;
+  const environmentURL = activeEnvironmentURL();
+  const raw = environmentURL || (['ws', 'wss'].includes(urlScheme(req.url)) ? req.url : '');
+  const lock = activeEnvironmentURL() || profileNameFromURL(raw) || activeProfileName || '';
+  if (raw) setURL(raw, lock);
+  else setURL('');
+  if (el.protocol) el.protocol.value = req.protocol || '';
   el.payload.value = req.body || '';
   lastSent = el.payload.value;
   recordDraft.in = req.example || '';
   if (el.payloadIn) el.payloadIn.value = req.example || '';
   loadReqMeta(req);
+  withoutSessionReset(() => applyTransportFromURL());
   return true;
 }
 
@@ -4322,7 +4504,7 @@ function upsertCurrentSavedRequest() {
   if (activeSavedId) {
     const i = list.findIndex((r) => r.id === activeSavedId);
     if (i >= 0) {
-      const req = isHTTPMode()
+      const req = isDefinitionHTTPMode()
         ? snapshotCurrentRequest(currentRequestKey() || list[i].name || 'GET /', list[i].id)
         : snapshotWSMessage(wsNameFromEditor(list[i]), list[i].id);
       list[i] = req;
@@ -4330,7 +4512,7 @@ function upsertCurrentSavedRequest() {
       return req.id;
     }
   }
-  if (isHTTPMode()) {
+  if (isDefinitionHTTPMode()) {
     const key = currentRequestKey();
     let i = list.findIndex((r) => isHTTPSaved(r) && requestKeyFrom(r) === key);
     if (i < 0) i = list.findIndex((r) => isHTTPSaved(r) && r.name === key);
@@ -4399,15 +4581,17 @@ async function pickSavedWSMessage(id) {
 
 async function persistProfile(selectName, { syncRequest = true } = {}) {
   if (typeof selectName !== 'string') selectName = '';
-  flushReqMeta();
-  flushDocEditors();
-  if (syncRequest && activeSavedId) syncActiveRequestSnapshot();
+  if (isDocMode()) {
+    flushReqMeta();
+    flushDocEditors();
+  }
+  if (syncRequest && isDocMode() && activeSavedId) syncActiveRequestSnapshot();
   const current = currentProfile();
-  const emptyProject = Boolean(current?.project) && !String(current?.url || '').trim();
-  const name = (emptyProject ? profileNameFromURL(currentURL()) : '') || activeProfileName || profileNameFromURL(currentURL());
+  const emptyProject = Boolean(current?.project) && !profileNameFromURL(current?.url || '');
+  const name = current?.name || activeProfileName || profileNameFromURL(currentURL());
   if (!name) return;
   const prev = profiles.find((x) => x.name === name);
-  const url = prev?.url || currentURL() || '';
+  const url = emptyProject ? '' : (prev?.url || currentURL() || '');
   const module = currentReqModule();
   if (module && activeSavedId) rememberModule(module);
   authState = {
@@ -4442,18 +4626,22 @@ async function persistProfile(selectName, { syncRequest = true } = {}) {
     requests: Array.isArray(src?.requests) ? src.requests : [],
     modules: [...(src?.modules || [])],
   };
+  const idx = profiles.findIndex((x) => x.name === name);
+  if (idx >= 0) profiles[idx] = p;
+  else {
+    profiles.push(p);
+    profiles.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  }
   try {
-    await SaveProfile(p);
-    const idx = profiles.findIndex((x) => x.name === name);
-    if (idx >= 0) profiles[idx] = p;
-    else {
-      profiles.push(p);
-      profiles.sort((a, b) => String(a.name).localeCompare(String(b.name)));
-    }
+    await queueProfileSave(p);
     renderProjectSelect();
     rememberSelection();
     renderCatalog();
-  } catch (_) {}
+    return true;
+  } catch (e) {
+    setDetailEmpty('保存失败: ' + e);
+    return false;
+  }
 }
 
 async function applyImportedCatalog(merged) {
@@ -4476,7 +4664,6 @@ function openExportMenu(anchor) {
 }
 
 async function exportCatalog() {
-  if (!requireURL()) return;
   await persistProfile();
   const p = currentProfile();
   if (!p) return;
@@ -4621,8 +4808,8 @@ async function sendMsg() {
   setBusy(true);
   try {
     if (historyMode) await exitHistoryMode();
-    const savedId = upsertCurrentSavedRequest();
-    await persistProfile();
+    const savedId = isDocMode() ? upsertCurrentSavedRequest() : activeSavedId;
+    await persistProfile('', { syncRequest: isDocMode() });
     setActiveSavedId(savedId);
     if (savedId) loadReqMeta(currentSavedRequest());
     if (http) {
@@ -4635,7 +4822,7 @@ async function sendMsg() {
       await Send(text);
     }
     lastSent = text;
-    await persistProfile();
+    await persistProfile('', { syncRequest: isDocMode() });
   } catch (e) {
     setDetailEmpty(String(e));
   } finally {
@@ -4977,9 +5164,9 @@ async function init() {
     }
   });
 
-  el.modeSwitch?.addEventListener('click', (e) => {
+  el.modeSwitch?.addEventListener('click', async (e) => {
     const mode = e.target?.closest?.('.mode-btn')?.dataset?.mode;
-    if (mode) setWorkMode(mode);
+    if (mode) await setWorkMode(mode);
   });
   el.btnToggle.addEventListener('click', toggleConn);
   el.btnSend.addEventListener('click', sendMsg);
@@ -5185,7 +5372,7 @@ async function init() {
   });
   el.url.addEventListener('input', () => {
     if (syncingQuery) return;
-    if (isHTTPMode()) syncParamsFromURL();
+    if (isDefinitionHTTPMode()) syncParamsFromURL();
   });
   el.protocol.addEventListener('change', persistProfile);
   el.method.addEventListener('change', () => {

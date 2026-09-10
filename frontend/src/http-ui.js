@@ -83,6 +83,51 @@ export function applyQuery(url, rows) {
   return u.toString();
 }
 
+function absoluteURL(raw) {
+  const text = String(raw || '').trim();
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return null;
+  try {
+    return new URL(text);
+  } catch {
+    return null;
+  }
+}
+
+// Saved API definitions are environment-independent paths. Older absolute
+// URLs are reduced relative to the BASE_URL that originally owned them.
+export function requestDefinitionURL(requestURL, environmentURL = '') {
+  let raw = String(requestURL || '').trim();
+  if (!raw) return '/';
+  raw = raw.replace(/^\{\{\s*BASE_URL\s*\}\}/i, '') || '/';
+  const request = absoluteURL(raw);
+  if (!request) {
+    if (raw.startsWith('/') || raw.startsWith('?') || raw.startsWith('#')) return raw;
+    return `/${raw.replace(/^\/+/, '')}`;
+  }
+  const environment = absoluteURL(environmentURL);
+  let path = request.pathname || '/';
+  if (environment && request.origin === environment.origin) {
+    const base = String(environment.pathname || '').replace(/\/+$/, '');
+    if (base && base !== '/' && (path === base || path.startsWith(`${base}/`))) {
+      path = path.slice(base.length) || '/';
+    }
+  }
+  return `${path.startsWith('/') ? path : `/${path}`}${request.search}${request.hash}`;
+}
+
+export function requestURLForEnvironment(definitionURL, environmentURL) {
+  const environment = absoluteURL(environmentURL);
+  if (!environment) return String(definitionURL || '').trim();
+  const definition = requestDefinitionURL(definitionURL);
+  const match = definition.match(/^([^?#]*)(\?[^#]*)?(#.*)?$/);
+  const path = match?.[1] || '/';
+  const base = String(environment.pathname || '').replace(/\/+$/, '');
+  environment.pathname = `${base === '/' ? '' : base}${path.startsWith('/') ? path : `/${path}`}` || '/';
+  environment.search = match?.[2] || '';
+  environment.hash = match?.[3] || '';
+  return environment.toString();
+}
+
 export function formEncode(rows) {
   const p = new URLSearchParams();
   for (const r of rows || []) {
@@ -144,8 +189,6 @@ export function methodOmitsBody(method) {
   switch (String(method || '').toUpperCase()) {
     case 'GET':
     case 'HEAD':
-    case 'DELETE':
-    case 'OPTIONS':
       return true;
     default:
       return false;

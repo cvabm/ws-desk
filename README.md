@@ -1,44 +1,45 @@
 # ApiTester
 
-极简 Windows WebSocket / HTTP 调试桌面端（Wails + Go）。
+一个基于 Wails + Go 的 Windows HTTP / WebSocket 接口管理与调试工具。
 
-产物：`ApiTester.exe`。
+## 主要功能
 
-## 功能
+- 文档模式：按项目和模块维护 HTTP 接口或 WebSocket 消息，无需先创建环境。
+- 调试模式：选择环境后执行已保存的接口；环境只提供 `BASE_URL` 地址前缀和变量值。
+- 支持 `http`、`https`、`ws`、`wss`，以及 Params、Headers、Auth、Body、重定向和 WebSocket subprotocol。
+- 项目、环境和接口分层保存；每个环境只属于一个项目，同项目数据保存在一个 JSON 文件中。
+- 支持接口目录导入导出、请求记录、会话日志和历史搜索。
+- 每次启动默认进入文档模式。
 
-- 支持 **ws / wss / http / https**
-- WebSocket：连接 / 断开、subprotocol、自动重连、ping；发送时未连接则自动连接
-- HTTP/HTTPS：无需连接；Params / Headers / Auth / Body，发送后看状态码、耗时、请求头、响应头和响应体（自签证书可连）
-- **手动记录**：HTTP 在「响应」页填写状态/头/体；WebSocket 在底部「发送 / 返回」各填一侧。点「记录」即可保存（不发网络请求），写入当天日志，可在历史里检索
-- 多行发送、JSON 格式化、重发上一条（`Ctrl+Enter` 发送）
-- 消息列表 + 详情；**默认浅色**，可一键切深色（本地记住）
-- URL 自己带协议（`ws://` / `wss://` / `http://` / `https://`）；Profile 按 **协议 + IP/域名 + 端口** 分开保存，下拉切换
-- 会话日志：按 **日期 + IP/域名** 分文件 `requests/ws-YYYY-MM-DD-host.jsonl`
-- **历史**：按天和主机浏览 / 关键字搜索 jsonl，可返回实时
+## 数据目录
+
+首次启动会要求选择数据文件夹，之后记住该位置。若记住的文件夹已不存在，会重新要求选择。
+
+所选目录中包含：
+
+- `connection-profiles/`：项目、环境和接口定义，一个项目一个 JSON 文件。
+- `api-requests/`：HTTP / WebSocket 会话日志。
+
+建议选择仓库和 `build/bin` 之外的目录，避免清理构建产物时误删。应用不会自动把该目录加入主仓库；是否提交由该目录自身的 Git 配置决定。
 
 ## 开发
 
-```bash
-# 需要: Go 1.25+、Node、WebView2、gcc(MSYS2)
-go install github.com/wailsapp/wails/v2/cmd/wails@latest
+需要 Go、Node.js、WebView2、Wails CLI，以及 Windows 上 Wails 构建所需的 GCC 环境。
 
-cd ws-desk
+```bash
+go install github.com/wailsapp/wails/v2/cmd/wails@latest
 wails dev
 ```
 
-## 打包单文件
+测试与构建：
 
 ```bash
-cd ws-desk
+go test ./...
+cd frontend
+npm test
+npm run build
+cd ..
 wails build
-# 产物: build/bin/ApiTester.exe
 ```
 
-运行时会在 exe 同目录（或项目目录）使用：
-
-- `servers/` 连接配置
-- `requests/` 会话日志
-
-## 旧脚本
-
-仓库根目录的 `ws-imcp.js` / `ws-gateway.js` 仍可作命令行备用。
+产物位于 `build/bin/ApiTester.exe`。

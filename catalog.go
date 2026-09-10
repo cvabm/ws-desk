@@ -615,7 +615,9 @@ func (a *App) exportAllCatalogs() (bool, error) {
 	if a.ctx == nil {
 		return false, fmt.Errorf("app not ready")
 	}
+	a.profileMu.Lock()
 	list, err := a.loadProfiles()
+	a.profileMu.Unlock()
 	if err != nil {
 		return false, err
 	}
@@ -678,6 +680,8 @@ func (a *App) importCatalog() (*Profile, error) {
 	if err != nil {
 		return nil, err
 	}
+	a.profileMu.Lock()
+	defer a.profileMu.Unlock()
 	return a.applyImportedFile(raw)
 }
 

@@ -24,6 +24,8 @@ export function GetMessages(arg1:number,arg2:number):Promise<Array<main.Msg>>;
 
 export function GetPaths():Promise<Record<string, string>>;
 
+export function GetProfileLoadError():Promise<string>;
+
 export function GetProfiles():Promise<Array<main.Profile>>;
 
 export function GetStatus():Promise<main.Status>;

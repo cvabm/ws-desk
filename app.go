@@ -14,10 +14,12 @@ import (
 
 // App is the Wails application API surface.
 type App struct {
-	ctx            context.Context
-	baseDir        string
-	defaultBaseDir string
-	hub            *clientHub
+	ctx             context.Context
+	baseDir         string
+	defaultBaseDir  string
+	hub             *clientHub
+	profileMu       sync.Mutex
+	profileWarnings []string
 
 	histMu   sync.Mutex
 	histPath string
@@ -104,7 +106,10 @@ func (a *App) selectDataBaseDir() string {
 		if raw, err := os.ReadFile(path); err == nil {
 			var cfg dataLocationConfig
 			if json.Unmarshal(raw, &cfg) == nil && cfg.Directory != "" {
-				return filepath.Clean(cfg.Directory)
+				remembered := filepath.Clean(cfg.Directory)
+				if dataDirectoryUsable(remembered) {
+					return remembered
+				}
 			}
 		}
 	}
@@ -127,6 +132,21 @@ func (a *App) selectDataBaseDir() string {
 		}
 	}
 	return base
+}
+
+func dataDirectoryUsable(dir string) bool {
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	probe, err := os.CreateTemp(dir, ".apitester-write-check-*")
+	if err != nil {
+		return false
+	}
+	name := probe.Name()
+	closeErr := probe.Close()
+	removeErr := os.Remove(name)
+	return closeErr == nil && removeErr == nil
 }
 
 func renameDirIfNeeded(oldPath, newPath string) {
@@ -159,21 +179,40 @@ func (a *App) shutdown(ctx context.Context) {
 // GetProfiles returns saved connection profiles (one per scheme + host[:port]).
 // Reading profiles must never rewrite or remove user data.
 func (a *App) GetProfiles() []Profile {
+	a.profileMu.Lock()
+	defer a.profileMu.Unlock()
+	a.profileWarnings = nil
 	list, err := a.loadProfiles()
 	if err != nil {
+		a.profileWarnings = append(a.profileWarnings, err.Error())
 		return nil
 	}
 	return list
 }
 
+// GetProfileLoadError reports files that could not be read without hiding
+// profiles that were loaded successfully.
+func (a *App) GetProfileLoadError() string {
+	a.profileMu.Lock()
+	defer a.profileMu.Unlock()
+	return strings.Join(a.profileWarnings, "\n")
+}
+
 // SaveProfile writes a profile keyed by scheme://host[:port].
 func (a *App) SaveProfile(p Profile) error {
+	a.profileMu.Lock()
+	defer a.profileMu.Unlock()
 	p.URL = strings.TrimSpace(p.URL)
 	if p.URL != "" {
 		if name := profileNameFromURL(p.URL); name != "" {
 			p.Name = name
+		} else if strings.TrimSpace(p.Project) != "" {
+			// API paths belong to SavedRequest.URL. A project without an
+			// environment must not persist that relative path as its base URL.
+			p.URL = ""
 		}
-	} else if strings.TrimSpace(p.Project) != "" && strings.TrimSpace(p.Name) == "" {
+	}
+	if p.URL == "" && strings.TrimSpace(p.Project) != "" && strings.TrimSpace(p.Name) == "" {
 		p.Name = "project:" + strings.TrimSpace(p.Project)
 	}
 	if p.Name == "" {
@@ -192,11 +231,15 @@ func (a *App) SaveProfile(p Profile) error {
 
 // SaveRequest upserts a named request bookmark under the host profile.
 func (a *App) SaveRequest(profileHint string, req SavedRequest) (SavedRequest, error) {
+	a.profileMu.Lock()
+	defer a.profileMu.Unlock()
 	return a.saveRequestOnProfile(profileHint, req)
 }
 
 // DeleteRequest removes a named request bookmark from the host profile.
 func (a *App) DeleteRequest(profileHint, id string) error {
+	a.profileMu.Lock()
+	defer a.profileMu.Unlock()
 	return a.deleteRequestOnProfile(profileHint, id)
 }
 
@@ -217,6 +260,8 @@ func (a *App) ImportCatalog() (*Profile, error) {
 
 // DeleteProfile removes the saved preset for a scheme://host[:port] (or raw URL).
 func (a *App) DeleteProfile(name string) error {
+	a.profileMu.Lock()
+	defer a.profileMu.Unlock()
 	if err := a.deleteProfile(name); err != nil {
 		return err
 	}
