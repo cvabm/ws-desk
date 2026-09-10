@@ -42,6 +42,7 @@ import {
   mergeRequestHeaders,
   parseAuthorization,
   guessBodyType,
+  methodOmitsBody,
   editorHeadersFromRequest,
   parseHTTPOutPreview,
   renderKV,
@@ -274,6 +275,14 @@ let lastHostVarURL = '';
 function schedulePersist() {
   clearTimeout(persistTimer);
   persistTimer = setTimeout(() => persistProfile(), 400);
+}
+
+function scheduleDefinitionPersist() {
+  if (isDocMode()) schedulePersist();
+}
+
+function persistDefinitionNow() {
+  if (isDocMode()) return persistProfile();
 }
 
 function queueProfileSave(profile) {
@@ -863,9 +872,9 @@ function applyDocEditing() {
   for (const node of fields) {
     if (node) node.readOnly = locked;
   }
-  // 方法和 subprotocol 是接口定义；调试模式只执行已选接口。
+  // 文档只读状态锁定接口定义；调试模式编辑的是不会落盘的临时副本。
   for (const node of [el.method, el.protocol]) {
-    if (node) node.disabled = !editing;
+    if (node) node.disabled = isDocMode() && !editing;
   }
   if (el.reqTitle) el.reqTitle.placeholder = locked ? '' : '标题，例如 登录';
   if (el.reqModule) el.reqModule.placeholder = locked ? '' : '模块';
@@ -954,8 +963,8 @@ function applyWorkMode() {
   el.app?.classList.remove('doc-editing');
   applyDocEditing();
   el.docPane?.classList.add('hidden');
-  // 参数、请求头、鉴权和请求体都在文档模式维护。
-  el.reqPane?.classList.add('hidden');
+  // HTTP 调试使用当前接口的临时副本；切回文档或切换接口时重新加载已保存定义。
+  el.reqPane?.classList.toggle('hidden', !http);
   el.composer?.classList.remove('hidden');
   placePayload(http);
   placeReqMeta(http);
@@ -1134,6 +1143,7 @@ function applyTransportUI(scheme) {
   const http = HTTP_SCHEMES.has(scheme);
   const modeChanged = Boolean(el.app?.classList.contains('http')) !== http;
   el.app?.classList.toggle('http', http);
+  syncURLPresentation(http);
   el.protocol.classList.toggle('hidden', http);
   el.method.classList.toggle('hidden', !http);
   el.reconnectWrap?.classList.toggle('hidden', http);
@@ -1236,6 +1246,22 @@ function setURL(url, lockName) {
     el.url.readOnly = !prefix;
     el.url.placeholder = prefix ? '/path' : '点击 + 填写地址';
   }
+  syncURLPresentation(HTTP_SCHEMES.has(urlScheme(prefix || url)));
+}
+
+function syncURLPresentation(http = isHTTPMode()) {
+  const fullWebSocketURL = !http
+    && Boolean(urlPrefix)
+    && ['ws', 'wss'].includes(urlScheme(urlPrefix));
+  el.urlBox?.classList.toggle('full-url', fullWebSocketURL);
+  if (el.url) el.url.setAttribute('aria-hidden', fullWebSocketURL ? 'true' : 'false');
+  if (el.urlPrefix && urlPrefix) {
+    const shownURL = fullWebSocketURL ? currentURL() : urlPrefix;
+    el.urlPrefix.textContent = shownURL;
+    el.urlPrefix.title = fullWebSocketURL
+      ? `${shownURL}（WebSocket 环境地址，只读）`
+      : `${urlPrefix}（前缀不可改，点 + 换地址）`;
+  }
 }
 
 function currentURL() {
@@ -1296,14 +1322,18 @@ function syncAuthFields() {
 }
 
 function setReqTab(tab) {
-  reqTab = tab === 'response' || tab === 'vars' ? 'body' : (tab || 'body');
+  const bodyOmitted = isDefinitionHTTPMode() && methodOmitsBody(el.method?.value);
+  let next = tab === 'response' || tab === 'vars' ? 'body' : (tab || 'body');
+  if (bodyOmitted && next === 'body') next = 'params';
+  reqTab = next;
   for (const btn of el.reqTabs?.querySelectorAll('.req-tab') || []) {
+    if (btn.dataset.tab === 'body') btn.classList.toggle('hidden', bodyOmitted);
     btn.classList.toggle('on', btn.dataset.tab === reqTab);
   }
   el.tabParams?.classList.toggle('hidden', reqTab !== 'params');
   el.tabHeaders?.classList.toggle('hidden', reqTab !== 'headers');
   el.tabAuth?.classList.toggle('hidden', reqTab !== 'auth');
-  el.tabBody?.classList.toggle('hidden', reqTab !== 'body');
+  el.tabBody?.classList.toggle('hidden', bodyOmitted || reqTab !== 'body');
 }
 
 function syncParamsFromURL() {
@@ -1319,14 +1349,14 @@ function onParamsChange() {
   const next = applyQuery(url, paramRows);
   if (next) setURL(next, activeEnvironmentURL() || urlPrefix);
   syncingQuery = false;
-  schedulePersist();
+  scheduleDefinitionPersist();
 }
 
 function renderRequestEditor() {
   if (el.paramRows) renderKV(el.paramRows, paramRows, onParamsChange);
-  if (el.headerRows) renderKV(el.headerRows, headerRows, schedulePersist);
+  if (el.headerRows) renderKV(el.headerRows, headerRows, scheduleDefinitionPersist);
   if (el.varRows) renderKV(el.varRows, varRows, onVarRowsChange, { lockHost: true });
-  if (el.formRows) renderKV(el.formRows, formRows, schedulePersist);
+  if (el.formRows) renderKV(el.formRows, formRows, scheduleDefinitionPersist);
 }
 
 function onVarRowsChange() {
@@ -1885,6 +1915,7 @@ function applyHTTPExchange(ex) {
   } else if (el.method) {
     el.method.value = 'GET';
   }
+  setReqTab(reqTab);
   const auth = parseAuthorization(ex.reqHeaders);
   const curAuth = {
     type: el.authType?.value || authState.type,
@@ -4415,6 +4446,7 @@ function applySavedRequest(req) {
   } else if (el.method) {
     el.method.value = 'GET';
   }
+  setReqTab(reqTab);
   loadHeadersFromProfile(req);
   loadAuthFromProfile(req);
   loadBodyTypeFromProfile(req);
@@ -4593,7 +4625,7 @@ async function persistProfile(selectName, { syncRequest = true } = {}) {
   const prev = profiles.find((x) => x.name === name);
   const url = emptyProject ? '' : (prev?.url || currentURL() || '');
   const module = currentReqModule();
-  if (module && activeSavedId) rememberModule(module);
+  if (isDocMode() && module && activeSavedId) rememberModule(module);
   authState = {
     type: el.authType?.value || 'none',
     token: el.authToken?.value || '',
@@ -4602,24 +4634,27 @@ async function persistProfile(selectName, { syncRequest = true } = {}) {
   };
   const cur = profiles.find((x) => x.name === name) || currentProfile();
   const src = cur || prev;
+  const keepSavedEditor = !isDocMode() && src;
   const p = {
     name,
     url,
     project: src?.project || (isExplicitProject(el.project?.value) ? String(el.project.value).trim() : ''),
-    protocol: el.protocol.value.trim(),
-    method: el.method?.value || 'GET',
-    headers: currentHeaders(),
-    headerList: cloneRows(headerRows),
+    protocol: keepSavedEditor ? (src.protocol || '') : el.protocol.value.trim(),
+    method: keepSavedEditor ? (src.method || 'GET') : (el.method?.value || 'GET'),
+    headers: keepSavedEditor ? { ...(src.headers || {}) } : currentHeaders(),
+    headerList: keepSavedEditor
+      ? (Array.isArray(src.headerList) ? cloneRows(src.headerList) : rowsFromMap(src.headers))
+      : cloneRows(headerRows),
     variableList: cloneRows(varRows),
     activeEnv,
     environments: snapshotEnvironments(),
-    authType: authState.type,
-    authToken: authState.token,
-    authUser: authState.user,
-    authPass: authState.pass,
-    bodyType: currentBodyType(),
-    body: currentBody(),
-    formList: cloneRows(formRows),
+    authType: keepSavedEditor ? (src.authType || 'none') : authState.type,
+    authToken: keepSavedEditor ? (src.authToken || '') : authState.token,
+    authUser: keepSavedEditor ? (src.authUser || '') : authState.user,
+    authPass: keepSavedEditor ? (src.authPass || '') : authState.pass,
+    bodyType: keepSavedEditor ? (src.bodyType || 'json') : currentBodyType(),
+    body: keepSavedEditor ? (src.body || '') : currentBody(),
+    formList: keepSavedEditor ? cloneRows(src.formList || []) : cloneRows(formRows),
     reconnect: el.reconnect.checked,
     pingSec: 20,
     noFollowRedirects: el.followRedirects ? !el.followRedirects.checked : false,
@@ -4835,7 +4870,7 @@ async function formatPayload() {
   if (text.trim()) el.payload.value = await FormatJSON(text);
   const ret = el.payloadIn?.value || '';
   if (ret.trim()) el.payloadIn.value = await FormatJSON(ret);
-  if (text.trim() || ret.trim()) schedulePersist();
+  if (text.trim() || ret.trim()) scheduleDefinitionPersist();
 }
 
 async function formatRecordField(target) {
@@ -5177,7 +5212,7 @@ async function init() {
     if (fillFromMessage(m)) {
       setFillButton(true);
       flashFilled();
-      schedulePersist();
+      scheduleDefinitionPersist();
     }
   });
   el.btnCopyDetail?.addEventListener('click', () => copySelectedDetail());
@@ -5209,15 +5244,15 @@ async function init() {
   });
   el.authType?.addEventListener('change', () => {
     syncAuthFields();
-    persistProfile();
+    persistDefinitionNow();
   });
-  el.authToken?.addEventListener('change', persistProfile);
-  el.authUser?.addEventListener('change', persistProfile);
-  el.authPass?.addEventListener('change', persistProfile);
+  el.authToken?.addEventListener('change', persistDefinitionNow);
+  el.authUser?.addEventListener('change', persistDefinitionNow);
+  el.authPass?.addEventListener('change', persistDefinitionNow);
   for (const radio of document.querySelectorAll('input[name="bodyType"]')) {
     radio.addEventListener('change', () => {
       applyBodyTypeUI();
-      persistProfile();
+      persistDefinitionNow();
     });
   }
   setReqTab('body');
@@ -5292,11 +5327,11 @@ async function init() {
   el.btnFmtRecRes?.addEventListener('click', () => formatRecordField(el.recResBody));
 
   el.payload.addEventListener('input', () => {
-    schedulePersist();
+    scheduleDefinitionPersist();
   });
   el.payloadIn?.addEventListener('input', () => {
     recordDraft.in = el.payloadIn.value || '';
-    schedulePersist();
+    scheduleDefinitionPersist();
   });
   el.payload.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
@@ -5374,10 +5409,11 @@ async function init() {
     if (syncingQuery) return;
     if (isDefinitionHTTPMode()) syncParamsFromURL();
   });
-  el.protocol.addEventListener('change', persistProfile);
+  el.protocol.addEventListener('change', persistDefinitionNow);
   el.method.addEventListener('change', () => {
+    setReqTab(reqTab);
     rematchSavedFromEditor();
-    persistProfile();
+    persistDefinitionNow();
   });
   el.reconnect.addEventListener('change', persistProfile);
   el.reqTitle?.addEventListener('input', onReqMetaInput);

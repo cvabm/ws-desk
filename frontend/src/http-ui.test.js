@@ -46,3 +46,16 @@ test('DELETE and OPTIONS support request bodies', () => {
     followRedirects: false,
   }), /--data-raw/);
 });
+
+test('GET and HEAD omit request bodies', () => {
+  assert.equal(methodOmitsBody('GET'), true);
+  assert.equal(methodOmitsBody('HEAD'), true);
+  assert.equal(guessBodyType({}, '', 'GET'), 'none');
+  assert.doesNotMatch(toCurl({
+    method: 'GET',
+    url: 'http://example.test/items',
+    headers: {},
+    body: '{"ignored":true}',
+    followRedirects: false,
+  }), /--data-raw/);
+});
