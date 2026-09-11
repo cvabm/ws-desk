@@ -120,24 +120,6 @@ func (h *clientHub) RequestHTTP(opts ConnectOptions, body string) (*HTTPExchange
 	return c.RequestHTTP(opts, body)
 }
 
-func (h *clientHub) RecordHTTP(ex HTTPExchange) (*HTTPExchange, error) {
-	c, err := h.forURL(ex.URL)
-	if err != nil {
-		return nil, err
-	}
-	h.Select(c.profile)
-	return c.RecordHTTP(ex)
-}
-
-func (h *clientHub) RecordWS(opts ConnectOptions, outText, inText string) (*WSRecord, error) {
-	c, err := h.forURL(opts.URL)
-	if err != nil {
-		return nil, err
-	}
-	h.Select(c.profile)
-	return c.RecordWS(opts, outText, inText)
-}
-
 func (h *clientHub) Status() Status {
 	if c := h.current(); c != nil {
 		return c.Status()

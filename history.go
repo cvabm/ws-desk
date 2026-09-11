@@ -116,11 +116,6 @@ func (a *App) listSessions(keyword string) ([]SessionInfo, error) {
 	return list, nil
 }
 
-func dayFromLogName(name string) string {
-	day, _ := parseLogName(name)
-	return day
-}
-
 // parseLogName understands ws-YYYY-MM-DD.jsonl and ws-YYYY-MM-DD-host.jsonl.
 func parseLogName(name string) (day, host string) {
 	base := strings.TrimSuffix(name, filepath.Ext(name))

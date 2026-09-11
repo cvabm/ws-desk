@@ -305,16 +305,6 @@ func (a *App) RequestHTTP(opts ConnectOptions, body string) (*HTTPExchange, erro
 	return a.hub.RequestHTTP(opts, body)
 }
 
-// RecordHTTP saves a request/response pair without sending it.
-func (a *App) RecordHTTP(ex HTTPExchange) (*HTTPExchange, error) {
-	return a.hub.RecordHTTP(ex)
-}
-
-// RecordWS saves a WebSocket send/receive pair without transmitting.
-func (a *App) RecordWS(opts ConnectOptions, outText, inText string) (*WSRecord, error) {
-	return a.hub.RecordWS(opts, outText, inText)
-}
-
 // GetStatus returns the current connection status.
 func (a *App) GetStatus() Status {
 	return a.hub.Status()

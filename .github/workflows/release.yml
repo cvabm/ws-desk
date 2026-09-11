@@ -45,9 +45,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
           Copy-Item "build\bin\ApiTester.exe" "$outDir\ApiTester.exe"
-          if (Test-Path "servers") {
-            Copy-Item -Recurse "servers" "$outDir\servers"
-          }
 
           $zipName = "ApiTester-windows-amd64-$version.zip"
           if (Test-Path $zipName) { Remove-Item $zipName -Force }

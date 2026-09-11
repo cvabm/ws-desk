@@ -104,33 +104,6 @@ func normalizeSavedRequest(r SavedRequest) SavedRequest {
 	return r
 }
 
-func mergeImportedRequests(dst, src []SavedRequest) []SavedRequest {
-	byID := make(map[string]int, len(dst)+len(src))
-	out := make([]SavedRequest, 0, len(dst)+len(src))
-	for _, r := range dst {
-		r = normalizeSavedRequest(r)
-		if r.ID != "" {
-			byID[r.ID] = len(out)
-		}
-		out = append(out, r)
-	}
-	for _, r := range src {
-		r = normalizeSavedRequest(r)
-		if r.ID != "" {
-			if i, ok := byID[r.ID]; ok {
-				out[i] = r
-				continue
-			}
-		}
-		if r.ID == "" {
-			r.ID = newRequestID()
-		}
-		byID[r.ID] = len(out)
-		out = append(out, r)
-	}
-	return out
-}
-
 func mergeVariables(dst, src []HeaderItem) []HeaderItem {
 	seen := make(map[string]int, len(dst)+len(src))
 	out := make([]HeaderItem, 0, len(dst)+len(src))
@@ -290,36 +263,6 @@ func envHostPairs(src Profile) [][2]string {
 	}
 	add(hostFromBaseVars(importVarMap(src)))
 	return out
-}
-
-func rewriteRequestsOntoHost(list []SavedRequest, host, full string) []SavedRequest {
-	if len(list) == 0 {
-		return nil
-	}
-	out := make([]SavedRequest, 0, len(list))
-	for _, r := range list {
-		r = normalizeSavedRequest(r)
-		r.ID = ""
-		resolved := strings.TrimSpace(full)
-		if resolved == "" {
-			resolved = host
-		}
-		if orig := strings.TrimSpace(r.URL); importHostFromURL(orig) != "" {
-			r.URL = requestURLOnHost(orig, host)
-		} else {
-			r.URL = requestURLOnHost(resolved, host)
-		}
-		out = append(out, r)
-	}
-	return out
-}
-
-func explicitProjectName(p Profile) string {
-	name := strings.TrimSpace(p.Project)
-	if name == "" || strings.Contains(name, "://") {
-		return ""
-	}
-	return name
 }
 
 func projectImportProfile(src Profile, fallback string) (Profile, error) {

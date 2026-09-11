@@ -215,119 +215,20 @@ func (c *wsClient) RequestHTTP(opts ConnectOptions, body string) (*HTTPExchange,
 	}
 	opts.URL = canon
 
-	doer, err := c.beginHTTP(opts, true)
+	doer, err := c.beginHTTP(opts)
 	if err != nil {
 		return nil, err
 	}
 	return c.doHTTP(opts, httpDoerFor(doer, opts.NoFollowRedirects), body)
 }
 
-// RecordHTTP stores a request/response pair in the live list and daily log without sending.
-func (c *wsClient) RecordHTTP(ex HTTPExchange) (*HTTPExchange, error) {
-	kind, canon, err := parseDialURL(ex.URL, "")
-	if err != nil {
-		return nil, err
-	}
-	if kind != kindHTTP {
-		return nil, fmt.Errorf("url must be http:// or https://")
-	}
-	ex.URL = canon
-	normalizeRecordedExchange(&ex)
-
-	opts := ConnectOptions{
-		URL:     ex.URL,
-		Method:  ex.Method,
-		Headers: ex.ReqHeaders,
-	}
-	if _, err := c.beginHTTP(opts, false); err != nil {
-		return nil, err
-	}
-
-	ptr := &ex
-	c.pushEx("out", formatHTTPOut(ex.Method, ex.URL, ex.ReqBody), ptr)
-	c.pushEx("in", formatHTTPIn(ex.Status, ex.ResBody, false), ptr)
-	return ptr, nil
-}
-
-// RecordWS stores a send/receive pair in the live list and daily log without sending.
-func (c *wsClient) RecordWS(opts ConnectOptions, outText, inText string) (*WSRecord, error) {
-	kind, canon, err := parseDialURL(opts.URL, "ws")
-	if err != nil {
-		return nil, err
-	}
-	if kind != kindWS {
-		return nil, fmt.Errorf("url must be ws:// or wss://")
-	}
-	opts.URL = canon
-	if strings.TrimSpace(outText) == "" && strings.TrimSpace(inText) == "" {
-		return nil, fmt.Errorf("out or in text is required")
-	}
-
-	rec := &WSRecord{
-		URL:      canon,
-		Protocol: strings.TrimSpace(opts.Protocol),
-		Out:      outText,
-		In:       inText,
-		Manual:   true,
-	}
-	if err := c.beginWSRecord(opts); err != nil {
-		return nil, err
-	}
-	if outText != "" {
-		c.pushWS("out", outText, rec)
-	}
-	c.push("sys", fmt.Sprintf("recorded  ws  out=%db  in=%db", len(outText), len(inText)))
-	if inText != "" {
-		c.pushWS("in", inText, rec)
-	}
-	return rec, nil
-}
-
-func (c *wsClient) beginWSRecord(opts ConnectOptions) error {
+func (c *wsClient) beginHTTP(opts ConnectOptions) (*http.Client, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	live := c.conn != nil || c.wantOpen.Load()
-	host := urlHostname(opts.URL)
-	if c.logger != nil && c.logger.Host() != host && !live {
-		c.logger.Close()
-		c.logger = nil
-		c.session = ""
-	}
-	if c.logger == nil {
-		proto := strings.TrimSpace(opts.Protocol)
-		if proto == "" {
-			proto = "ws"
-		}
-		logger, logErr := newSessionLogger(c.app.requestsDir(), opts.URL, proto)
-		if logErr != nil {
-			return logErr
-		}
-		c.logger = logger
-		c.session = logger.SessionID()
-	}
-	if !live {
-		c.opts = opts
-		c.kind = kindWS
-		if c.state == "" {
-			c.state = "idle"
-		}
-		c.errMsg = ""
-	}
-	return nil
-}
-
-func (c *wsClient) beginHTTP(opts ConnectOptions, needDoer bool) (*http.Client, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	live := c.conn != nil || c.wantOpen.Load()
-	var doer *http.Client
-	if needDoer {
-		if c.httpDoer == nil {
-			c.httpDoer = newHTTPDoer()
-		}
-		doer = c.httpDoer
+	if c.httpDoer == nil {
+		c.httpDoer = newHTTPDoer()
 	}
 	host := urlHostname(opts.URL)
 	if c.logger != nil && c.logger.Host() != host && !live {
@@ -349,7 +250,7 @@ func (c *wsClient) beginHTTP(opts ConnectOptions, needDoer bool) (*http.Client, 
 		c.state = "idle"
 		c.errMsg = ""
 	}
-	return doer, nil
+	return c.httpDoer, nil
 }
 
 func (c *wsClient) doHTTP(opts ConnectOptions, doer *http.Client, body string) (*HTTPExchange, error) {
@@ -602,22 +503,6 @@ func (c *wsClient) cleanupConn(conn *websocket.Conn, cancel context.CancelFunc, 
 
 func (c *wsClient) push(dir, text string) {
 	c.pushEx(dir, text, nil)
-}
-
-func (c *wsClient) pushWS(dir, text string, rec *WSRecord) {
-	pretty := text
-	if (dir == "in" || dir == "out") && len(text) <= 16*1024 {
-		pretty = prettyJSON(text)
-	}
-	c.emitMsg(Msg{
-		ID:     c.nextID.Add(1),
-		Dir:    dir,
-		Time:   beijingNow(),
-		Text:   text,
-		Pretty: pretty,
-		Bytes:  len(text),
-		WS:     rec,
-	})
 }
 
 func (c *wsClient) pushEx(dir, text string, ex *HTTPExchange) {

@@ -175,35 +175,6 @@ func formatHTTPIn(status string, body string, truncated bool) string {
 	return body
 }
 
-func httpStatusLine(code int, status string) (int, string) {
-	if code <= 0 {
-		code = http.StatusOK
-	}
-	status = strings.TrimSpace(status)
-	if status == "" {
-		if t := http.StatusText(code); t != "" {
-			status = fmt.Sprintf("%d %s", code, t)
-		} else {
-			status = fmt.Sprintf("%d", code)
-		}
-	}
-	return code, status
-}
-
-func normalizeRecordedExchange(ex *HTTPExchange) {
-	if ex.ReqHeaders == nil {
-		ex.ReqHeaders = map[string]string{}
-	}
-	if ex.ResHeaders == nil {
-		ex.ResHeaders = map[string]string{}
-	}
-	ex.Method = normalizeHTTPMethod(ex.Method, ex.ReqBody)
-	ex.StatusCode, ex.Status = httpStatusLine(ex.StatusCode, ex.Status)
-	ex.Bytes = len(ex.ResBody)
-	ex.Manual = true
-	ex.Error = ""
-}
-
 func flattenHeader(h http.Header) map[string]string {
 	out := make(map[string]string, len(h))
 	for k, vs := range h {

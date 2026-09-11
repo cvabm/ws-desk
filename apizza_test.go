@@ -180,34 +180,3 @@ func TestApplyImportedFileApizza(t *testing.T) {
 		t.Fatalf("catalog=%+v", list[0])
 	}
 }
-
-func TestParseApizzaXiaojingFile(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("build", "bin", "小京2.0管控.apizza-project.json"))
-	if err != nil {
-		t.Skip(err)
-	}
-	p, err := parseApizzaProject(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p.URL != "ws://106.120.208.29:10020/imcp" {
-		t.Fatalf("url=%q", p.URL)
-	}
-	if p.Project != "小京2.0管控" {
-		t.Fatalf("project=%q", p.Project)
-	}
-	if len(p.Requests) < 50 {
-		t.Fatalf("too few requests: %d", len(p.Requests))
-	}
-	for _, r := range p.Requests {
-		if r.Kind != "ws" {
-			t.Fatalf("expected ws: %+v", r)
-		}
-		if r.Title == "" {
-			t.Fatalf("empty title: %+v", r)
-		}
-	}
-	if len(p.Environments) != 3 {
-		t.Fatalf("envs=%#v", p.Environments)
-	}
-}

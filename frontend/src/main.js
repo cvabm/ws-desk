@@ -172,7 +172,6 @@ const el = {
   btnCopyDetail: $('btnCopyDetail'),
   payloadWrap: $('payloadWrap'),
   payloadOutCol: $('payloadOutCol'),
-  payloadInCol: $('payloadInCol'),
   payload: $('payload'),
   payloadIn: $('payloadIn'),
 
@@ -386,11 +385,6 @@ function openSettings() {
   showSettingsSection(el.settingsNav?.querySelector('.settings-nav-item.on')?.dataset.section || 'catalog');
   el.settingsModal?.classList.remove('hidden');
   el.settingsModal?.setAttribute('aria-hidden', 'false');
-}
-
-function toggleSettings() {
-  if (settingsOpen()) closeSettings();
-  else openSettings();
 }
 
 /* —— messages —— */
@@ -1384,40 +1378,6 @@ function resolvedBody() {
   return expandVars(currentBody(), currentVarMap());
 }
 
-function currentRecordedExchange() {
-  const vars = currentVarMap();
-  const opts = resolvedOpts();
-  const reqBodyRaw = el.recReqBody?.value || '';
-  const reqBody = expandVars(reqBodyRaw, vars);
-  const resBody = expandVars(el.recResBody?.value || '', vars);
-  const t = currentBodyType();
-  const reqHeaders = mergeRequestHeaders(
-    headerRows,
-    {
-      type: el.authType?.value || authState.type,
-      token: el.authToken?.value || authState.token,
-      user: el.authUser?.value || authState.user,
-      pass: el.authPass?.value || authState.pass,
-    },
-    t,
-    Boolean(reqBodyRaw) && t !== 'none',
-  );
-  return {
-    method: opts.method,
-    url: opts.url,
-    status: '200 OK',
-    statusCode: 200,
-    timeMs: 0,
-    bytes: resBody.length,
-    truncated: false,
-    reqHeaders: expandMap(reqHeaders, vars),
-    resHeaders: {},
-    reqBody,
-    resBody,
-    manual: true,
-  };
-}
-
 function currentBody() {
   const t = currentBodyType();
   if (t === 'none') return '';
@@ -1537,12 +1497,6 @@ function applyEnv(name) {
   const hostURL = envConnectionURL(env);
   applyConnectionURL(hostURL, previousHostURL);
   alignActiveRequestToEnvironment();
-}
-
-async function onEnvSelectChange() {
-  const name = el.barEnv?.value || '';
-  if (!name) return;
-  await selectEnvironment(name);
 }
 
 function uniqueEnvName(base) {
@@ -1703,11 +1657,6 @@ function openEnvEdit() {
   if (el.envEditName) el.envEditName.textContent = activeEnv || '';
   el.envEdit.classList.remove('hidden');
   renderRequestEditor();
-}
-
-function toggleEnvEdit() {
-  if (envEditOpen()) closeEnvEdit();
-  else openEnvEdit();
 }
 
 function openEnvMenu() {
@@ -2668,35 +2617,6 @@ function askConfirm({ title, message, okText }) {
   return new Promise((resolve) => {
     confirmResolver = resolve;
   });
-}
-
-async function deleteCurrentProfile() {
-  const name = currentProfile()?.name || profileNameFromURL(currentURL());
-  if (!name) return;
-  const project = currentProjectName();
-  const ok = await askConfirm({
-    title: '删除地址',
-    message: `确定删除 ${name} ？此操作不可恢复。`,
-    okText: '删除',
-  });
-  if (!ok) return;
-  clearTimeout(persistTimer);
-  try {
-    await DeleteProfile(name);
-  } catch (e) {
-    setDetailEmpty('删除失败: ' + e);
-    return;
-  }
-  if (activeProfileName === name) activeProfileName = '';
-  profiles = profiles.filter((p) => p.name !== name);
-  if (profiles.length) {
-    const next = profilesInProject(project)[0] || profiles[0];
-    await applyProfile(next);
-  } else {
-    renderProjectSelect();
-    clearEditor();
-    createProject();
-  }
 }
 
 async function loadProfiles() {
@@ -4487,11 +4407,6 @@ function savedRequestHaystack(r) {
   return `${method} ${path} ${r?.name || ''} ${r?.title || ''} ${r?.description || ''} ${r?.module || ''} ${r?.url || ''} ${r?.example || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
-function savedRequestMatches(r, kw) {
-  if (!kw) return true;
-  return savedRequestHaystack(r).includes(kw);
-}
-
 function fillHighlighted(node, text, kw) {
   node.textContent = '';
   const raw = String(text || '');
@@ -4522,11 +4437,6 @@ function fillHighlighted(node, text, kw) {
 
 function savedWSHaystack(r) {
   return `${r?.name || ''} ${r?.title || ''} ${r?.description || ''} ${r?.module || ''} ${r?.body || ''} ${r?.example || ''}`.replace(/\s+/g, ' ').trim().toLowerCase();
-}
-
-function savedWSMatches(r, kw) {
-  if (!kw) return true;
-  return savedWSHaystack(r).includes(kw);
 }
 
 function upsertCurrentSavedRequest() {

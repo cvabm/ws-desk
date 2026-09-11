@@ -82,14 +82,6 @@ export function PickAndLoadSession() {
   return window['go']['main']['App']['PickAndLoadSession']();
 }
 
-export function RecordHTTP(arg1) {
-  return window['go']['main']['App']['RecordHTTP'](arg1);
-}
-
-export function RecordWS(arg1, arg2, arg3) {
-  return window['go']['main']['App']['RecordWS'](arg1, arg2, arg3);
-}
-
 export function RequestHTTP(arg1, arg2) {
   return window['go']['main']['App']['RequestHTTP'](arg1, arg2);
 }
