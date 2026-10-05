@@ -26,10 +26,12 @@ type App struct {
 	histFull *SessionDetail
 }
 
+const dataDirectoryName = "apitester-data"
+
 // NewApp creates a new App application struct.
 func NewApp() *App {
 	base := resolveBaseDir()
-	a := &App{baseDir: filepath.Join(base, "app-data"), defaultBaseDir: base}
+	a := &App{baseDir: defaultDataDirectory(base), defaultBaseDir: base}
 	a.hub = newClientHub(a)
 	return a
 }
@@ -45,7 +47,7 @@ func resolveBaseDir() string {
 
 		// Prefer executable directory when packaged; fall back to cwd for `wails dev`.
 		// wails dev runs from a temp build path; if no data dirs nearby, use cwd.
-		for _, name := range []string{"servers", "requests", "profiles", "ws-logs"} {
+		for _, name := range []string{dataDirectoryName} {
 			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
 				return dir
 			}
@@ -65,29 +67,6 @@ func (a *App) requestsDir() string {
 	return filepath.Join(a.baseDir, "api-requests")
 }
 
-func (a *App) migrateDataDirs() {
-	// Keep user data outside build/bin: Wails rebuilds can replace that directory.
-	// The old names are retained here solely to migrate existing installations.
-	for _, oldPath := range []string{
-		filepath.Join(a.defaultBaseDir, "app-data", "app-data", "connection-profiles"),
-		filepath.Join(a.defaultBaseDir, "app-data", "connection-profiles"),
-		filepath.Join(a.defaultBaseDir, "build", "bin", "servers"),
-		filepath.Join(a.defaultBaseDir, "servers"),
-		filepath.Join(a.defaultBaseDir, "profiles"),
-	} {
-		renameDirIfNeeded(oldPath, a.serversDir())
-	}
-	for _, oldPath := range []string{
-		filepath.Join(a.defaultBaseDir, "app-data", "app-data", "api-requests"),
-		filepath.Join(a.defaultBaseDir, "app-data", "api-requests"),
-		filepath.Join(a.defaultBaseDir, "build", "bin", "requests"),
-		filepath.Join(a.defaultBaseDir, "requests"),
-		filepath.Join(a.defaultBaseDir, "ws-logs"),
-	} {
-		renameDirIfNeeded(oldPath, a.requestsDir())
-	}
-}
-
 type dataLocationConfig struct {
 	Directory string `json:"directory"`
 }
@@ -101,7 +80,36 @@ func dataLocationConfigPath() string {
 }
 
 func (a *App) selectDataBaseDir() string {
-	path := dataLocationConfigPath()
+	var pick func() (string, error)
+	if a.ctx != nil {
+		pick = func() (string, error) {
+			return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
+				Title: "选择 ApiTester 数据文件夹",
+			})
+		}
+	}
+	return a.selectDataDirectory(dataLocationConfigPath(), pick)
+}
+
+func defaultDataDirectory(base string) string {
+	return filepath.Join(base, dataDirectoryName)
+}
+
+func saveDataLocationConfig(path, directory string) error {
+	if path == "" {
+		return nil
+	}
+	data, err := json.Marshal(dataLocationConfig{Directory: directory})
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return atomicWriteFile(path, data, 0o600)
+}
+
+func (a *App) selectDataDirectory(path string, pick func() (string, error)) string {
 	if path != "" {
 		if raw, err := os.ReadFile(path); err == nil {
 			var cfg dataLocationConfig
@@ -114,24 +122,18 @@ func (a *App) selectDataBaseDir() string {
 		}
 	}
 
-	base := filepath.Join(a.defaultBaseDir, "app-data")
-	if a.ctx != nil {
-		picked, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
-			Title: "选择 ApiTester 数据文件夹",
-		})
-		if err == nil && picked != "" {
-			base = filepath.Clean(picked)
-		}
+	base := defaultDataDirectory(a.defaultBaseDir)
+	if pick == nil {
+		return base
 	}
-
-	if path != "" {
-		data, err := json.Marshal(dataLocationConfig{Directory: base})
-		if err == nil {
-			_ = os.MkdirAll(filepath.Dir(path), 0o755)
-			_ = os.WriteFile(path, data, 0o600)
-		}
+	picked, err := pick()
+	// A cancelled/failed dialog must not silently remember a fallback directory.
+	if err != nil || picked == "" || !dataDirectoryUsable(filepath.Clean(picked)) {
+		return base
 	}
-	return base
+	picked = filepath.Clean(picked)
+	_ = saveDataLocationConfig(path, picked)
+	return picked
 }
 
 func dataDirectoryUsable(dir string) bool {
@@ -149,23 +151,9 @@ func dataDirectoryUsable(dir string) bool {
 	return closeErr == nil && removeErr == nil
 }
 
-func renameDirIfNeeded(oldPath, newPath string) {
-	if oldPath == newPath {
-		return
-	}
-	if _, err := os.Stat(newPath); err == nil {
-		return
-	}
-	if _, err := os.Stat(oldPath); err != nil {
-		return
-	}
-	_ = os.Rename(oldPath, newPath)
-}
-
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.baseDir = a.selectDataBaseDir()
-	a.migrateDataDirs()
 	_ = os.MkdirAll(a.requestsDir(), 0o755)
 	_ = a.ensureServers()
 }

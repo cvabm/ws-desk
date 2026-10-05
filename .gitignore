@@ -4,5 +4,12 @@ frontend/dist
 requests/
 ws-logs/
 servers/
-app-data/
+apitester-data/
+connection-profiles/
+api-requests/
+.env
+.env.*
+*.pem
+*.key
+coverage.out
 *.exe

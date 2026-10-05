@@ -9,13 +9,12 @@ import (
 	"testing"
 )
 
-func TestInsecureTLSConfig(t *testing.T) {
-	cfg := insecureTLSConfig()
-	if cfg == nil || !cfg.InsecureSkipVerify {
-		t.Fatalf("expected InsecureSkipVerify, got %#v", cfg)
-	}
-	if cfg.MinVersion != tls.VersionTLS12 {
-		t.Fatalf("MinVersion = %d", cfg.MinVersion)
+func TestTLSConfigRequiresExplicitOptIn(t *testing.T) {
+	for _, insecure := range []bool{false, true} {
+		cfg := tlsConfig(insecure)
+		if cfg.InsecureSkipVerify != insecure || cfg.MinVersion != tls.VersionTLS12 {
+			t.Fatalf("unexpected TLS config: %#v", cfg)
+		}
 	}
 }
 
@@ -90,7 +89,7 @@ func TestDoHTTPDeleteAndOptionsSendBodies(t *testing.T) {
 	}
 }
 
-func TestHTTPDoerAcceptsSelfSigned(t *testing.T) {
+func TestHTTPDoerRejectsSelfSignedByDefault(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "ok")
 	}))
@@ -101,11 +100,62 @@ func TestHTTPDoerAcceptsSelfSigned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doHTTP err = %v", err)
 	}
-	if ex.Error != "" {
-		t.Fatalf("self-signed rejected: %s", ex.Error)
+	if ex.Error == "" {
+		t.Fatal("self-signed certificate accepted without explicit opt-in")
 	}
-	if ex.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d", ex.StatusCode)
+	ex, err = c.doHTTP(ConnectOptions{URL: srv.URL, Method: "GET", InsecureSkipVerify: true}, newHTTPDoerWithTLS(true), "")
+	if err != nil || ex.Error != "" || ex.StatusCode != http.StatusOK {
+		t.Fatalf("explicit lab mode failed: exchange=%#v err=%v", ex, err)
+	}
+}
+
+func TestHTTPHostOverrideIsSentAndLogged(t *testing.T) {
+	var received string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received = r.Host
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	c := newWSClient(NewApp())
+	ex, err := c.doHTTP(ConnectOptions{URL: srv.URL, Headers: map[string]string{"hOsT": "virtual.example"}}, newHTTPDoer(), "")
+	if err != nil || ex.Error != "" || received != "virtual.example" || ex.ReqHeaders["Host"] != received {
+		t.Fatalf("Host override failed: received=%q exchange=%#v err=%v", received, ex, err)
+	}
+}
+
+func TestHTTPClientTLSToggleAndCookieReset(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: "sid", Value: "test"})
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	a := NewApp()
+	a.baseDir = t.TempDir()
+	c := newWSClient(a)
+	t.Cleanup(c.Disconnect)
+	for _, insecure := range []bool{false, true, false} {
+		ex, err := c.RequestHTTP(ConnectOptions{URL: srv.URL, InsecureSkipVerify: insecure}, "")
+		if err != nil || (ex.Error == "") != insecure {
+			t.Fatalf("insecure=%v exchange=%#v err=%v", insecure, ex, err)
+		}
+	}
+	previous := c.httpDoer
+	jar := previous.Jar
+	c.ClearCookies()
+	if c.httpDoer == previous || c.httpDoer.Jar == jar || previous.Jar != jar {
+		t.Fatal("cookie reset must replace the client without mutating in-flight requests")
+	}
+}
+
+func TestHTTPMessageIsImmutableSnapshot(t *testing.T) {
+	c := newWSClient(NewApp())
+	ex := &HTTPExchange{StatusCode: 0, ReqHeaders: map[string]string{"X-Test": "before"}}
+	c.pushEx("out", "request", ex)
+	ex.StatusCode = http.StatusOK
+	ex.ReqHeaders["X-Test"] = "after"
+	got := c.Messages(0, 1)[0].Exchange
+	if got.StatusCode != 0 || got.ReqHeaders["X-Test"] != "before" {
+		t.Fatalf("message changed after logging: %#v", got)
 	}
 }
 

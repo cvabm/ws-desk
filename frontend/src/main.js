@@ -97,6 +97,8 @@ const el = {
   reconnect: $('reconnect'),
   reconnectWrap: $('reconnectWrap'),
   followRedirects: $('followRedirects'),
+  insecureSkipVerify: $('insecureSkipVerify'),
+  tlsWrap: $('tlsWrap'),
   redirectWrap: $('redirectWrap'),
   btnCurl: $('btnCurl'),
   btnCurlDetail: $('btnCurlDetail'),
@@ -1142,6 +1144,7 @@ function applyTransportUI(scheme) {
   el.method.classList.toggle('hidden', !http);
   el.reconnectWrap?.classList.toggle('hidden', http);
   el.redirectWrap?.classList.toggle('hidden', !http);
+  el.tlsWrap?.classList.toggle('hidden', scheme !== 'https' && scheme !== 'wss');
   el.btnCurlDetail?.classList.toggle('hidden', !http);
   el.btnToggle?.classList.toggle('hidden', http);
   el.btnSendTop?.classList.toggle('hidden', !http);
@@ -2469,6 +2472,7 @@ async function applyProfile(p, keepHint) {
   }
   el.reconnect.checked = p.reconnect !== false;
   if (el.followRedirects) el.followRedirects.checked = !p.noFollowRedirects;
+  if (el.insecureSkipVerify) el.insecureSkipVerify.checked = Boolean(p.insecureSkipVerify);
   loadHeadersFromProfile(p);
   loadVariablesFromProfile(p);
   loadAuthFromProfile(p);
@@ -2508,6 +2512,7 @@ function clearEditor() {
   if (el.protocol) el.protocol.value = '';
   if (el.method) el.method.value = 'GET';
   el.reconnect.checked = true;
+  if (el.insecureSkipVerify) el.insecureSkipVerify.checked = false;
   if (el.payload) el.payload.value = '';
   if (el.payloadIn) el.payloadIn.value = '';
   paramRows = [emptyRow()];
@@ -2752,6 +2757,7 @@ function currentOpts() {
     reconnect: el.reconnect.checked,
     pingSec: 20,
     noFollowRedirects: el.followRedirects ? !el.followRedirects.checked : false,
+    insecureSkipVerify: Boolean(el.insecureSkipVerify?.checked),
   };
 }
 
@@ -2767,6 +2773,7 @@ function currentCurlSpec() {
     headers: opts.headers,
     body: isDefinitionHTTPMode() ? resolvedBody() : '',
     followRedirects: curlFollowRedirects(),
+    insecureSkipVerify: opts.insecureSkipVerify,
   };
 }
 
@@ -2777,6 +2784,7 @@ function exchangeCurlSpec(ex) {
     headers: ex.reqHeaders || {},
     body: ex.reqBody || '',
     followRedirects: curlFollowRedirects(),
+    insecureSkipVerify: Boolean(ex.insecureSkipVerify),
   };
 }
 
@@ -4568,6 +4576,7 @@ async function persistProfile(selectName, { syncRequest = true } = {}) {
     reconnect: el.reconnect.checked,
     pingSec: 20,
     noFollowRedirects: el.followRedirects ? !el.followRedirects.checked : false,
+    insecureSkipVerify: Boolean(el.insecureSkipVerify?.checked),
     requests: Array.isArray(src?.requests) ? src.requests : [],
     modules: [...(src?.modules || [])],
   };
@@ -5326,6 +5335,7 @@ async function init() {
     persistDefinitionNow();
   });
   el.reconnect.addEventListener('change', persistProfile);
+  el.insecureSkipVerify?.addEventListener('change', persistProfile);
   el.reqTitle?.addEventListener('input', onReqMetaInput);
   el.reqModule?.addEventListener('focus', () => {
     moduleFilterArmed = false;

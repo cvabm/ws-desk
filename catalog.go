@@ -398,6 +398,7 @@ func mergeProjectCatalogs(dst, src Profile) Profile {
 		dst.Reconnect = src.Reconnect
 		dst.PingSec = src.PingSec
 		dst.NoFollowRedirects = src.NoFollowRedirects
+		dst.InsecureSkipVerify = src.InsecureSkipVerify
 	}
 	dst.Requests = mergeDedupedRequests(dst.Requests, src.Requests)
 	mods := append([]string{}, dst.Modules...)

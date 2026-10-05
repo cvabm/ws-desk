@@ -57,6 +57,7 @@
       <input id="protocol" class="input proto" type="text" spellcheck="false" placeholder="subprotocol"/>
       <label id="reconnectWrap" class="check"><input id="reconnect" type="checkbox" checked/> 重连</label>
       <label id="redirectWrap" class="check hidden"><input id="followRedirects" type="checkbox" checked/> 重定向</label>
+      <label id="tlsWrap" class="check hidden" title="仅供可信测试环境使用；启用后 HTTPS/WSS 不校验服务器身份"><input id="insecureSkipVerify" type="checkbox"/> 忽略证书错误（不安全）</label>
       <button id="btnToggle" class="btn primary" type="button">连接</button>
       <button id="btnSendTop" class="btn primary hidden" type="button">发送</button>
       <button id="btnRecord" class="btn ghost" type="button" title="保存到左侧接口，不发送">记录</button>

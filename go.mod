@@ -2,6 +2,8 @@ module ws-desk
 
 go 1.25.0
 
+toolchain go1.26.6
+
 require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/wailsapp/wails/v2 v2.13.0

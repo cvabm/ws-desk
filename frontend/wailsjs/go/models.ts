@@ -8,6 +8,7 @@ export namespace main {
 	    reconnect: boolean;
 	    pingSec: number;
 	    noFollowRedirects?: boolean;
+	    insecureSkipVerify?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConnectOptions(source);
@@ -22,6 +23,7 @@ export namespace main {
 	        this.reconnect = source["reconnect"];
 	        this.pingSec = source["pingSec"];
 	        this.noFollowRedirects = source["noFollowRedirects"];
+	        this.insecureSkipVerify = source["insecureSkipVerify"];
 	    }
 	}
 	export class HeaderItem {
@@ -86,6 +88,7 @@ export namespace main {
 	    resBody: string;
 	    error?: string;
 	    manual?: boolean;
+	    insecureSkipVerify?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new HTTPExchange(source);
@@ -106,6 +109,7 @@ export namespace main {
 	        this.resBody = source["resBody"];
 	        this.error = source["error"];
 	        this.manual = source["manual"];
+	        this.insecureSkipVerify = source["insecureSkipVerify"];
 	    }
 	}
 	
@@ -264,6 +268,7 @@ export namespace main {
 	    reconnect: boolean;
 	    pingSec: number;
 	    noFollowRedirects?: boolean;
+	    insecureSkipVerify?: boolean;
 	    requests?: SavedRequest[];
 	    modules?: string[];
 	
@@ -293,6 +298,7 @@ export namespace main {
 	        this.reconnect = source["reconnect"];
 	        this.pingSec = source["pingSec"];
 	        this.noFollowRedirects = source["noFollowRedirects"];
+	        this.insecureSkipVerify = source["insecureSkipVerify"];
 	        this.requests = this.convertValues(source["requests"], SavedRequest);
 	        this.modules = source["modules"];
 	    }

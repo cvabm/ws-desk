@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ type wsClient struct {
 	profile string
 
 	mu       sync.Mutex
+	sendMu   sync.Mutex // gorilla permits only one concurrent data-frame writer
 	conn     *websocket.Conn
 	httpDoer *http.Client
 	cancel   context.CancelFunc
@@ -88,6 +90,7 @@ func (c *wsClient) Connect(opts ConnectOptions) error {
 		return err
 	}
 	opts.URL = canon
+	opts.Headers = maps.Clone(opts.Headers)
 	if kind == kindHTTP {
 		return fmt.Errorf("http/https 无需连接，直接发送")
 	}
@@ -143,11 +146,16 @@ func (c *wsClient) Send(text string) error {
 	if err := c.waitUntilOpen(15 * time.Second); err != nil {
 		return err
 	}
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
 	c.mu.Lock()
 	conn := c.conn
 	c.mu.Unlock()
 	if conn == nil {
 		return fmt.Errorf("not connected")
+	}
+	if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return err
 	}
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(text)); err != nil {
 		return err
@@ -228,7 +236,14 @@ func (c *wsClient) beginHTTP(opts ConnectOptions) (*http.Client, error) {
 
 	live := c.conn != nil || c.wantOpen.Load()
 	if c.httpDoer == nil {
-		c.httpDoer = newHTTPDoer()
+		c.httpDoer = newHTTPDoerWithTLS(opts.InsecureSkipVerify)
+	} else if transport, ok := c.httpDoer.Transport.(*http.Transport); ok &&
+		transport.TLSClientConfig.InsecureSkipVerify != opts.InsecureSkipVerify {
+		// Never mutate a transport already used by an in-flight request.
+		previous := c.httpDoer
+		c.httpDoer = newHTTPDoerWithTLS(opts.InsecureSkipVerify)
+		c.httpDoer.Jar = previous.Jar
+		previous.CloseIdleConnections()
 	}
 	host := urlHostname(opts.URL)
 	if c.logger != nil && c.logger.Host() != host && !live {
@@ -255,11 +270,12 @@ func (c *wsClient) beginHTTP(opts ConnectOptions) (*http.Client, error) {
 
 func (c *wsClient) doHTTP(opts ConnectOptions, doer *http.Client, body string) (*HTTPExchange, error) {
 	ex := &HTTPExchange{
-		Method:     normalizeHTTPMethod(opts.Method, body),
-		URL:        opts.URL,
-		ReqBody:    body,
-		ReqHeaders: map[string]string{},
-		ResHeaders: map[string]string{},
+		Method:             normalizeHTTPMethod(opts.Method, body),
+		URL:                opts.URL,
+		ReqBody:            body,
+		ReqHeaders:         map[string]string{},
+		ResHeaders:         map[string]string{},
+		InsecureSkipVerify: opts.InsecureSkipVerify,
 	}
 	if doer == nil {
 		ex.Error = "http client missing"
@@ -284,6 +300,9 @@ func (c *wsClient) doHTTP(opts ConnectOptions, doer *http.Client, body string) (
 	}
 	applyHTTPHeaders(req, opts.Headers, reqBody)
 	ex.ReqHeaders = flattenHeader(req.Header)
+	if req.Host != req.URL.Host {
+		ex.ReqHeaders["Host"] = req.Host
+	}
 	if doer != nil {
 		snapshotJarCookies(ex.ReqHeaders, doer.Jar, opts.URL)
 	}
@@ -324,24 +343,34 @@ func (c *wsClient) dialLoop(ep uint64) {
 		}
 		if err != nil {
 			c.mu.Lock()
+			if c.epoch.Load() != ep || !c.wantOpen.Load() {
+				c.mu.Unlock()
+				return
+			}
 			c.errMsg = err.Error()
 			c.state = "reconnecting"
 			c.mu.Unlock()
 			c.push("sys", "error: "+err.Error())
 			c.emitStatus()
 		}
-		if !c.opts.Reconnect {
-			c.mu.Lock()
+		c.mu.Lock()
+		if c.epoch.Load() != ep || !c.wantOpen.Load() {
+			c.mu.Unlock()
+			return
+		}
+		reconnect := c.opts.Reconnect
+		if !reconnect {
 			c.state = "closed"
 			c.mu.Unlock()
 			c.emitStatus()
 			return
 		}
+		c.mu.Unlock()
 		c.push("sys", fmt.Sprintf("reconnect in %s", backoff))
 		timer := time.NewTimer(backoff)
 		select {
 		case <-timer.C:
-		case <-c.app.ctx.Done():
+		case <-c.appContext().Done():
 			timer.Stop()
 			return
 		}
@@ -358,7 +387,13 @@ func (c *wsClient) dialLoop(ep uint64) {
 }
 
 func (c *wsClient) dialOnce(ep uint64) error {
+	c.mu.Lock()
+	if c.epoch.Load() != ep || !c.wantOpen.Load() {
+		c.mu.Unlock()
+		return nil
+	}
 	opts := c.opts
+	c.mu.Unlock()
 	header := http.Header{}
 	for k, v := range opts.Headers {
 		if k != "" {
@@ -367,6 +402,10 @@ func (c *wsClient) dialOnce(ep uint64) error {
 	}
 
 	c.mu.Lock()
+	if c.epoch.Load() != ep || !c.wantOpen.Load() {
+		c.mu.Unlock()
+		return nil
+	}
 	c.state = "connecting"
 	c.errMsg = ""
 	c.mu.Unlock()
@@ -374,7 +413,7 @@ func (c *wsClient) dialOnce(ep uint64) error {
 
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 10 * time.Second,
-		TLSClientConfig:  insecureTLSConfig(),
+		TLSClientConfig:  tlsConfig(opts.InsecureSkipVerify),
 		Subprotocols:     nil,
 	}
 	if opts.Protocol != "" {
@@ -402,6 +441,14 @@ func (c *wsClient) dialOnce(ep uint64) error {
 	}
 
 	c.mu.Lock()
+	// A disconnect/new connect may have happened while dialing or opening the log.
+	if c.epoch.Load() != ep || !c.wantOpen.Load() {
+		c.mu.Unlock()
+		cancel()
+		_ = conn.Close()
+		logger.Close()
+		return nil
+	}
 	if c.conn != nil {
 		_ = c.conn.Close()
 	}
@@ -484,7 +531,8 @@ func (c *wsClient) cleanupConn(conn *websocket.Conn, cancel context.CancelFunc, 
 	cancel()
 	_ = conn.Close()
 	c.mu.Lock()
-	if c.conn == conn {
+	current := c.conn == conn
+	if current {
 		c.conn = nil
 	}
 	if c.logger == logger {
@@ -492,13 +540,17 @@ func (c *wsClient) cleanupConn(conn *websocket.Conn, cancel context.CancelFunc, 
 		c.logger = nil
 		c.session = ""
 	}
-	if c.wantOpen.Load() && c.opts.Reconnect {
-		c.state = "reconnecting"
-	} else {
-		c.state = "closed"
+	if current {
+		if c.wantOpen.Load() && c.opts.Reconnect {
+			c.state = "reconnecting"
+		} else {
+			c.state = "closed"
+		}
 	}
 	c.mu.Unlock()
-	c.emitStatus()
+	if current {
+		c.emitStatus()
+	}
 }
 
 func (c *wsClient) push(dir, text string) {
@@ -506,6 +558,13 @@ func (c *wsClient) push(dir, text string) {
 }
 
 func (c *wsClient) pushEx(dir, text string, ex *HTTPExchange) {
+	if ex != nil {
+		// History and UI polling must not observe an exchange still being mutated.
+		snapshot := *ex
+		snapshot.ReqHeaders = maps.Clone(ex.ReqHeaders)
+		snapshot.ResHeaders = maps.Clone(ex.ResHeaders)
+		ex = &snapshot
+	}
 	pretty := text
 	if ex != nil {
 		pretty = clipText(text, 480)
@@ -560,5 +619,15 @@ func (c *wsClient) ClearCookies() {
 	if c.httpDoer == nil {
 		return
 	}
-	c.httpDoer.Jar = newCookieJar()
+	// Requests may still be using the old client; replace rather than mutate it.
+	clone := *c.httpDoer
+	clone.Jar = newCookieJar()
+	c.httpDoer = &clone
+}
+
+func (c *wsClient) appContext() context.Context {
+	if c.app != nil && c.app.ctx != nil {
+		return c.app.ctx
+	}
+	return context.Background()
 }

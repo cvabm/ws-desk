@@ -356,9 +356,9 @@ function curlQuote(s) {
   return `"${String(s ?? '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
-export function toCurl({ method, url, headers, body, followRedirects }) {
+export function toCurl({ method, url, headers, body, followRedirects, insecureSkipVerify = false }) {
   const parts = ['curl.exe'];
-  if (/^https:/i.test(url || '')) parts.push('-k');
+  if (insecureSkipVerify && /^https:/i.test(url || '')) parts.push('-k');
   if (followRedirects) parts.push('-L');
   else parts.push('--max-redirs', '0');
   const m = String(method || 'GET').toUpperCase();

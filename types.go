@@ -39,6 +39,8 @@ type Profile struct {
 	PingSec      int           `json:"pingSec"`
 	// NoFollowRedirects keeps HTTP 3xx as the response (API-tester default is to follow).
 	NoFollowRedirects bool `json:"noFollowRedirects,omitempty"`
+	// InsecureSkipVerify is an explicit opt-in for lab/self-signed certificates.
+	InsecureSkipVerify bool `json:"insecureSkipVerify,omitempty"`
 	// Requests are named snapshots under this host. Variables stay on the profile.
 	Requests []SavedRequest `json:"requests,omitempty"`
 	// Modules are named folders in the per-host catalog. Empty folders stay here.
@@ -71,13 +73,14 @@ type SavedRequest struct {
 
 // ConnectOptions is used by the UI to open a connection.
 type ConnectOptions struct {
-	URL               string            `json:"url"`
-	Protocol          string            `json:"protocol"`
-	Method            string            `json:"method,omitempty"`
-	Headers           map[string]string `json:"headers"`
-	Reconnect         bool              `json:"reconnect"`
-	PingSec           int               `json:"pingSec"`
-	NoFollowRedirects bool              `json:"noFollowRedirects,omitempty"`
+	URL                string            `json:"url"`
+	Protocol           string            `json:"protocol"`
+	Method             string            `json:"method,omitempty"`
+	Headers            map[string]string `json:"headers"`
+	Reconnect          bool              `json:"reconnect"`
+	PingSec            int               `json:"pingSec"`
+	NoFollowRedirects  bool              `json:"noFollowRedirects,omitempty"`
+	InsecureSkipVerify bool              `json:"insecureSkipVerify,omitempty"`
 }
 
 // Msg is a single logged frame (in/out/sys).
@@ -106,19 +109,20 @@ type WSRecord struct {
 
 // HTTPExchange is one HTTP/HTTPS request/response pair.
 type HTTPExchange struct {
-	Method     string            `json:"method"`
-	URL        string            `json:"url"`
-	Status     string            `json:"status"`
-	StatusCode int               `json:"statusCode"`
-	TimeMs     int64             `json:"timeMs"`
-	Bytes      int               `json:"bytes"`
-	Truncated  bool              `json:"truncated"`
-	ReqHeaders map[string]string `json:"reqHeaders"`
-	ResHeaders map[string]string `json:"resHeaders"`
-	ReqBody    string            `json:"reqBody"`
-	ResBody    string            `json:"resBody"`
-	Error      string            `json:"error,omitempty"`
-	Manual     bool              `json:"manual,omitempty"`
+	Method             string            `json:"method"`
+	URL                string            `json:"url"`
+	Status             string            `json:"status"`
+	StatusCode         int               `json:"statusCode"`
+	TimeMs             int64             `json:"timeMs"`
+	Bytes              int               `json:"bytes"`
+	Truncated          bool              `json:"truncated"`
+	ReqHeaders         map[string]string `json:"reqHeaders"`
+	ResHeaders         map[string]string `json:"resHeaders"`
+	ReqBody            string            `json:"reqBody"`
+	ResBody            string            `json:"resBody"`
+	Error              string            `json:"error,omitempty"`
+	Manual             bool              `json:"manual,omitempty"`
+	InsecureSkipVerify bool              `json:"insecureSkipVerify,omitempty"`
 }
 
 // Status is the live connection snapshot for the UI.

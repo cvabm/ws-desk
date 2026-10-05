@@ -692,6 +692,7 @@ html, body {
 .app.doc-mode:not(.history) .bar > #method,
 .app.doc-mode:not(.history) .bar > #reconnectWrap,
 .app.doc-mode:not(.history) .bar > #redirectWrap,
+.app.doc-mode:not(.history) .bar > #tlsWrap,
 .app.doc-mode:not(.history) .bar > #btnToggle,
 .app.doc-mode:not(.history) .bar > #btnSendTop,
 .app.doc-mode:not(.history) .bar > #btnRecord,

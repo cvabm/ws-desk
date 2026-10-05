@@ -9,6 +9,13 @@ import {
   toCurl,
 } from './http-ui.js';
 
+test('curl verifies HTTPS unless explicitly configured otherwise', () => {
+  const spec = { method: 'GET', url: 'https://example.test', headers: {} };
+  assert.doesNotMatch(toCurl(spec), /(?:^|\s)-k(?:\s|$)/);
+  assert.match(toCurl({ ...spec, insecureSkipVerify: true }), /(?:^|\s)-k(?:\s|$)/);
+  assert.doesNotMatch(toCurl({ ...spec, url: 'http://example.test', insecureSkipVerify: true }), /(?:^|\s)-k(?:\s|$)/);
+});
+
 test('request definition removes its source environment prefix', () => {
   assert.equal(
     requestDefinitionURL(

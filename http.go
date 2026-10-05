@@ -18,10 +18,10 @@ const (
 	httpDialTimeout = 10 * time.Second
 )
 
-// insecureTLSConfig allows lab / self-signed certs (debug client).
-func insecureTLSConfig() *tls.Config {
+// tlsConfig verifies certificates unless the user explicitly enables lab mode.
+func tlsConfig(insecure bool) *tls.Config {
 	return &tls.Config{
-		InsecureSkipVerify: true,
+		InsecureSkipVerify: insecure,
 		MinVersion:         tls.VersionTLS12,
 	}
 }
@@ -35,6 +35,10 @@ func newCookieJar() http.CookieJar {
 }
 
 func newHTTPDoer() *http.Client {
+	return newHTTPDoerWithTLS(false)
+}
+
+func newHTTPDoerWithTLS(insecure bool) *http.Client {
 	return &http.Client{
 		Timeout: httpReqTimeout,
 		Jar:     newCookieJar(),
@@ -49,7 +53,7 @@ func newHTTPDoer() *http.Client {
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
-			TLSClientConfig:       insecureTLSConfig(),
+			TLSClientConfig:       tlsConfig(insecure),
 		},
 	}
 }
@@ -126,6 +130,11 @@ func looksLikeJSON(s string) bool {
 func applyHTTPHeaders(req *http.Request, headers map[string]string, body string) {
 	for k, v := range headers {
 		if k == "" {
+			continue
+		}
+		// Go treats Host specially; setting Header["Host"] has no wire effect.
+		if strings.EqualFold(k, "Host") {
+			req.Host = v
 			continue
 		}
 		req.Header.Set(k, v)
