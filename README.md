@@ -1,13 +1,13 @@
 # ApiTester · HTTP / WebSocket 桌面调试工具
 
-[![Windows build](https://github.com/cvabm/ws-desk/actions/workflows/windows.yml/badge.svg)](https://github.com/cvabm/ws-desk/actions/workflows/windows.yml)
+[![Windows build](https://github.com/cvabm/apitester/actions/workflows/windows.yml/badge.svg)](https://github.com/cvabm/apitester/actions/workflows/windows.yml)
 
 一个基于 Wails + Go 的 Windows HTTP / WebSocket 接口管理与调试工具。
 
 ## 下载与使用
 
-- [正式版本](https://github.com/cvabm/ws-desk/releases)：发布后下载 `ApiTester-windows-amd64.zip`；没有版本时可使用下面的构建产物。
-- [自动构建](https://github.com/cvabm/ws-desk/actions/workflows/windows.yml)：进入成功的运行，下载 `ApiTester-windows-amd64` Artifact（需登录 GitHub，保留 14 天）。
+- [正式版本](https://github.com/cvabm/apitester/releases)：发布后下载 `ApiTester-windows-amd64.zip`；没有版本时可使用下面的构建产物。
+- [自动构建](https://github.com/cvabm/apitester/actions/workflows/windows.yml)：进入成功的运行，下载 `ApiTester-windows-amd64` Artifact（需登录 GitHub，保留 14 天）。
 
 解压后运行 `ApiTester.exe`。需要 Windows 10/11 x64 和 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)，不需要安装开发工具。当前构建未做代码签名。
 
@@ -41,7 +41,7 @@
 
 已有独立数据仓库时，启动程序后选择包含这两个子目录的仓库根目录即可，无需把数据复制进程序源码。
 
-例如本地目录为 `ws-desk/apitester-data/` 时，选择 `apitester-data` 这一层。程序仓库忽略该目录；独立数据仓库的 Git 历史及远端配置不受程序打包影响。
+例如本地目录为 `apitester/apitester-data/` 时，选择 `apitester-data` 这一层。程序仓库忽略该目录；独立数据仓库的 Git 历史及远端配置不受程序打包影响。
 
 ## 开发
 
@@ -76,9 +76,9 @@ go run github.com/wailsapp/wails/v2/cmd/wails@v2.13.0 build -clean -trimpath -pl
 已有私有数据的兼容性检查可在 PowerShell 中按需运行：
 
 ```powershell
-$env:WS_DESK_TEST_DATA = 'D:\path\to\private-data'
+$env:APITESTER_TEST_DATA = 'D:\path\to\private-data'
 go test -race -run '^TestPrivateDataOfflineCompatibility$' -v ./...
-Remove-Item Env:WS_DESK_TEST_DATA
+Remove-Item Env:APITESTER_TEST_DATA
 ```
 
 该测试只在临时副本上进行项目读取和保存，不请求真实接口，不修改原数据文件。普通测试和 CI 默认跳过；不要把私有数据或凭据上传到公共 CI。

@@ -27,7 +27,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate module licenses.' }
     foreach ($module in $modules) {
         $parts = $module -split '\|', 2
-        if ($parts.Count -ne 2 -or -not $parts[1] -or $parts[0] -eq 'ws-desk') { continue }
+        if ($parts.Count -ne 2 -or -not $parts[1] -or $parts[0] -eq 'apitester') { continue }
         $moduleName = $parts[0] -replace '[^a-zA-Z0-9._-]', '_'
         foreach ($file in (Get-ChildItem -LiteralPath $parts[1] -File)) {
             if ($file.Name -match '^(LICENSE|LICENCE|COPYING|NOTICE)(\..*)?$') {

@@ -12,7 +12,7 @@ ApiTester 是 Windows 上的 HTTP / WebSocket 接口管理与调试工具。下�
 
 如果接口数据已在独立目录或独立 Git 仓库中，直接选择包含 `connection-profiles/` 和 `api-requests/` 的上层目录，不要选择这两个子目录，也不必先导入 JSON。程序和数据分别维护；程序下载包不会附带你的接口数据。
 
-默认目录统一为 `apitester-data`，例如 `ws-desk/apitester-data/`。不提供旧名称的兼容或自动迁移；如果记住的目录已不存在或不可写，需要重新选择实际数据目录。
+默认目录统一为 `apitester-data`，例如 `apitester/apitester-data/`。不提供旧名称的兼容或自动迁移；如果记住的目录已不存在或不可写，需要重新选择实际数据目录。
 
 取消或选目录失败时不会保存默认位置，下次启动仍会询问；如果已记住可用目录，不会每次弹窗。
 

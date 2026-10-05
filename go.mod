@@ -1,4 +1,4 @@
-module ws-desk
+module apitester
 
 go 1.25.0
 

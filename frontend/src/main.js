@@ -56,6 +56,7 @@ import {
 } from './http-ui.js';
 
 const $ = (id) => document.getElementById(id);
+// Stable storage keys preserve preferences across the repository rename.
 const THEME_KEY = 'ws-desk-theme';
 const CATALOG_KEY = 'ws-desk-catalog';
 const SEL_KEY = 'ws-desk-sel';

@@ -11,6 +11,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
+// Keep the format identifier stable so existing exported catalogs remain readable.
 const catalogBundleKind = "ws-desk-catalogs"
 
 type catalogBundle struct {

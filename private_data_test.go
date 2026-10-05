@@ -13,9 +13,9 @@ import (
 // Opt-in offline test: no private fixtures or endpoint values are committed.
 // Only temporary copies are passed to APIs that can migrate/save profiles.
 func TestPrivateDataOfflineCompatibility(t *testing.T) {
-	root := os.Getenv("WS_DESK_TEST_DATA")
+	root := os.Getenv("APITESTER_TEST_DATA")
 	if root == "" {
-		t.Skip("set WS_DESK_TEST_DATA to a private data directory for offline verification")
+		t.Skip("set APITESTER_TEST_DATA to a private data directory for offline verification")
 	}
 	a := NewApp()
 	a.baseDir = t.TempDir()
